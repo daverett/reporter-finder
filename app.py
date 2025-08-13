@@ -10,7 +10,11 @@ import requests
 st.set_page_config(page_title="Reporter Finder", page_icon="📰", layout="wide")
 
 # ===== Secrets =====
-NEWS_API_KEY = st.secrets.get("NEWS_API_KEY", os.getenv("NEWS_API_KEY", ""))
+try:
+    NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
+except KeyError:
+    NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+
 HUNTER_API_KEY = st.secrets.get("HUNTER_API_KEY", os.getenv("HUNTER_API_KEY", ""))
 APP_USERNAME = st.secrets.get("APP_USERNAME", os.getenv("APP_USERNAME", ""))
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", ""))
@@ -33,10 +37,20 @@ def extract_domain(url: str):
     return m.group(1) if m else None
 
 def search_news(topic: str, max_results: int, sort_by: str):
+    if not NEWS_API_KEY:
+        st.error("Missing NEWS_API_KEY — please add it to Streamlit secrets.")
+        st.stop()
     url = "https://newsapi.org/v2/everything"
     params = {"q": topic, "apiKey": NEWS_API_KEY, "language": "en", "pageSize": max_results, "sortBy": sort_by}
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code == 401:
+            st.error("NewsAPI authentication failed — check your API key.")
+            st.stop()
+        r.raise_for_status()
+    except requests.RequestException as e:
+        st.error(f"News search failed: {e}")
+        st.stop()
     return r.json().get("articles", [])
 
 def hunter_email(domain: str):
@@ -55,10 +69,6 @@ def hunter_email(domain: str):
 st.title("📰 Reporter Finder")
 st.caption("Find journalists writing about your topic — with optional contact emails from Hunter.io.")
 
-if not NEWS_API_KEY:
-    st.error("Missing NEWS_API_KEY in secrets.")
-    st.stop()
-
 if not login():
     st.stop()
 
@@ -76,11 +86,7 @@ if run:
         st.stop()
 
     with st.spinner("Searching news…"):
-        try:
-            articles = search_news(topic, max_results, sort_by)
-        except Exception as e:
-            st.error(f"News search failed: {e}")
-            st.stop()
+        articles = search_news(topic, max_results, sort_by)
 
     rows = []
     seen = set()
