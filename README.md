@@ -1,4 +1,1 @@
-# Reporter Finder — Patched Version
-
-This version prevents exposing the NewsAPI URL in the browser and fails gracefully if API keys are missing or invalid.
-Deploy steps same as before.
+# Reporter Finder — Weighted by Outlet Prominence\n\nThis Streamlit app aggregates reporters by topic and weights them by outlet prominence.\n\nDeploy to Streamlit Cloud and add NEWS_API_KEY and (optionally) HUNTER_API_KEY to Secrets.\n
