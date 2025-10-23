@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from packaging import version
 
-# ---- Safety check for rich/streamlit combo (see section 1)
+# ---- Safety check for rich/streamlit combo
 try:
     import rich
     if version.parse(rich.__version__) >= version.parse("14.0.0"):
@@ -15,7 +15,7 @@ try:
 except Exception:
     pass
 
-# ---- Page & Theme
+# ---- Page
 st.set_page_config(
     page_title="Reporter Finder",
     page_icon="🕵️",
@@ -23,20 +23,66 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- Sidebar
+# ---------- Helpers
+def _parse_keywords(s: str) -> list[str]:
+    if not s:
+        return []
+    raw = [p.strip() for chunk in s.split(",") for p in chunk.split(" ") if p.strip()]
+    seen, out = set(), []
+    for w in raw:
+        lw = w.lower()
+        if lw not in seen:
+            seen.add(lw)
+            out.append(w)
+    return out
+
+def _parse_csv(s: str) -> list[str]:
+    if not s:
+        return []
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+# ---- Sidebar (Autocomplete chips with graceful fallback to freeform text)
 with st.sidebar:
     st.markdown("### Reporter Finder")
     st.caption("Narrow by beat, outlet, location, and recency.")
     st.divider()
 
-    default_beats = ["tech", "business", "policy", "science", "sports", "culture"]
-    beats = st.multiselect("Beats (global filter)", options=default_beats, default=["tech", "business"])
+    beats = []
+    used_fallback = False
+    try:
+        from streamlit_tags import st_tags  # type: ignore
+        suggested_beats = [
+            "ai", "startups", "labor", "antitrust", "policy", "cloud", "cybersecurity",
+            "privacy", "elections", "regulation", "saas", "venture", "hardware",
+            "mobility", "health", "fintech", "gaming", "media", "sports"
+        ]
+        beats = st_tags(
+            label="Beats (keywords)",
+            text="Type a beat and press Enter",
+            value=[],
+            suggestions=suggested_beats,
+            maxtags=12,
+            key="beats_tags",
+        )
+    except Exception:
+        used_fallback = True
+        beats_text = st.text_input(
+            "Beats (keywords)",
+            value="",
+            placeholder="e.g., ai, startups, labor, antitrust"
+        )
+        beats = _parse_keywords(beats_text)
+
     locations = st.text_input("Locations (comma-separated)", placeholder="e.g., New York, SF, London")
-    recency_days = st.slider("Recency (days)", 7, 365, 90, help="Filter by how recent articles/activities should be.")
+    recency_days = st.slider("Recency (days)", 7, 365, 90, help="How recent should items be.")
+    strict = st.toggle("Strict filters", value=False, help="Off = broader results; filters act as ranking boosts.")
     st.divider()
 
     st.caption("Data sources")
     source_toggle = st.toggle("Use external sources", value=True, help="Turn off to use only local cache.")
+
+    if used_fallback:
+        st.caption("Tip: Install optional dependency `streamlit-tags` for autocomplete chips.")
 
 # ---- Session State
 if "reporter_query" not in st.session_state:
@@ -45,10 +91,9 @@ if "article_query" not in st.session_state:
     st.session_state.article_query = ""
 
 st.title("Reporter Finder")
-
 tab_reporter, tab_articles = st.tabs(["Reporter", "Articles"])
 
-# Reporter Tab
+# ---------------------- Reporter Tab
 with tab_reporter:
     st.subheader("Find Reporters")
 
@@ -75,16 +120,33 @@ with tab_reporter:
     st.caption("Tip: combine name + outlet + beat for best precision.")
 
     if run:
+        # --- Replace this with your actual implementation
+        # Example stub showing how 'beats' integrates as freeform keywords
         sample = [
             {"name": "Casey Newton", "outlet": "Platformer", "beats": "tech, policy", "location": "SF", "email": "—", "recent_articles": 12},
             {"name": "Zoe Schiffer", "outlet": "Platformer", "beats": "tech, labor", "location": "NY", "email": "—", "recent_articles": 9},
             {"name": "Jane Doe", "outlet": "The Verge", "beats": "AI, startups", "location": "NY", "email": "jane@theverge.com", "recent_articles": 7},
         ]
         df = pd.DataFrame(sample)
+
+        # Simulate stricter filtering vs ranking when 'strict' is on/off
+        if beats:
+            mask = df["beats"].str.contains("|".join([b for b in beats]), case=False, na=False)
+            if strict:
+                df = df[mask].copy()
+            else:
+                # rank boost: move matches to top
+                df["rank_boost"] = mask.astype(int)
+                df = df.sort_values(["rank_boost", "recent_articles"], ascending=[False, False]).drop(columns=["rank_boost"])
+
+        if df.empty and not strict and recency_days < 365:
+            # Recency backoff demo (in your real search, widen date window)
+            st.info("Expanded recency window to widen results.")
+
         st.write(f"Found **{len(df)}** reporters")
         st.dataframe(df, use_container_width=True)
 
-# Articles Tab
+# ---------------------- Articles Tab
 with tab_articles:
     st.subheader("Search Articles")
 
@@ -115,10 +177,20 @@ with tab_articles:
             {"title": "Startups pivot to edge AI", "author": "John Roe", "outlet": "Semafor", "url": "https://example.com/b", "published": "2025-09-11"},
         ]
         df_articles = pd.DataFrame(rows)
+
+        # Example: apply beats as soft filter to article titles if provided
+        if beats:
+            mask = df_articles["title"].str.contains("|".join([b for b in beats]), case=False, na=False)
+            if strict:
+                df_articles = df_articles[mask].copy()
+            else:
+                df_articles["rank_boost"] = mask.astype(int)
+                df_articles = df_articles.sort_values(["rank_boost", "published"], ascending=[False, False]).drop(columns=["rank_boost"])
+
         st.write(f"Found **{len(df_articles)}** articles")
         st.dataframe(df_articles, use_container_width=True)
         if link_export and not df_articles.empty:
             csv = df_articles.to_csv(index=False).encode("utf-8")
             st.download_button("Download CSV", csv, "articles.csv", "text/csv")
 
-st.caption("Hint: toggle data sources in the sidebar, refine by beats & recency, then switch tabs.")
+st.caption("Hint: Beats are now freeform keywords with autocomplete (if 'streamlit-tags' is installed).")
