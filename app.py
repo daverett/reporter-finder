@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 # ===== Config =====
-st.set_page_config(page_title="Reporter Finder (Weighted)", page_icon="📰", layout="wide")
+st.set_page_config(page_title="Reporter Finder (Weighted + Perigon)", page_icon="📰", layout="wide")
 
 # ===== Top-tier outlets (starter set) =====
 TOP_TIER_OUTLETS = {
@@ -40,6 +40,10 @@ try:
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
 except Exception:
     NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+try:
+    PERIGON_API_KEY = st.secrets["PERIGON_API_KEY"]
+except Exception:
+    PERIGON_API_KEY = os.getenv("PERIGON_API_KEY", "")
 HUNTER_API_KEY = st.secrets.get("HUNTER_API_KEY", os.getenv("HUNTER_API_KEY", ""))
 APP_USERNAME = st.secrets.get("APP_USERNAME", os.getenv("APP_USERNAME", ""))
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", ""))
@@ -49,22 +53,109 @@ def extract_domain(url: str):
     m = re.match(r"https?://([^/]+)/?", url or "")
     return m.group(1) if m else None
 
-def search_news(topic: str, max_results: int, sort_by: str):
+# ---- NewsAPI fetch (normalized) ----
+def get_newsapi_articles(topic: str, max_results: int, sort_by: str):
     if not NEWS_API_KEY:
-        st.error("Missing NEWS_API_KEY — please add it to Streamlit secrets.")
-        st.stop()
+        return []
     url = "https://newsapi.org/v2/everything"
     params = {"q": topic, "apiKey": NEWS_API_KEY, "language": "en", "pageSize": max_results, "sortBy": sort_by}
     try:
         r = requests.get(url, params=params, timeout=20)
         if r.status_code == 401:
-            st.error("NewsAPI authentication failed — check your API key.")
-            st.stop()
+            return []
         r.raise_for_status()
-    except requests.RequestException as e:
-        st.error(f"News search failed: {e}")
-        st.stop()
-    return r.json().get("articles", [])
+    except requests.RequestException:
+        return []
+    data = r.json() or {}
+    items = data.get("articles", []) or []
+    results = []
+    for it in items:
+        title = (it.get("title") or "").strip()
+        url_ = it.get("url") or ""
+        author = (it.get("author") or "").strip()
+        source = (it.get("source") or {}).get("name") or ""
+        published = it.get("publishedAt") or ""
+        if not title or not url_:
+            continue
+        results.append({
+            "title": title,
+            "url": url_,
+            "source": source,
+            "author": author,
+            "publishedAt": published,
+        })
+    return results
+
+# ---- Perigon fetch (normalized) ----
+def get_perigon_articles(topic: str, max_results: int, sort_by: str):
+    if not PERIGON_API_KEY:
+        return []
+    url = "https://api.goperigon.com/v1/all"
+    perigon_sort = "relevance" if sort_by == "relevancy" else "date"
+    params = {
+        "q": topic,
+        "apiKey": PERIGON_API_KEY,
+        "size": max_results,
+        "sortBy": perigon_sort,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        if r.status_code == 401:
+            return []
+        r.raise_for_status()
+    except requests.RequestException:
+        return []
+    data = r.json() or {}
+    items = data.get("articles") or data.get("data") or []
+    results = []
+    for it in items:
+        title = (it.get("title") or it.get("headline") or "").strip()
+        url_ = it.get("url") or it.get("link") or ""
+        # source normalization
+        source_name = ""
+        src = it.get("source")
+        if isinstance(src, dict):
+            source_name = (src.get("name") or src.get("domain") or "").strip()
+        elif isinstance(src, str):
+            source_name = src.strip()
+        # author normalization
+        author = ""
+        if isinstance(it.get("author"), str):
+            author = it["author"].strip()
+        elif isinstance(it.get("authors"), list) and it["authors"]:
+            author = ", ".join([a for a in it["authors"] if isinstance(a, str)])[:200]
+        published = it.get("publishedAt") or it.get("pubDate") or it.get("date") or ""
+        if not title or not url_:
+            continue
+        results.append({
+            "title": title,
+            "url": url_,
+            "source": source_name,
+            "author": author,
+            "publishedAt": published,
+        })
+    return results
+
+# ---- Unified fetch & dedupe ----
+def search_articles(topic: str, max_results: int, sort_by: str):
+    newsapi_list = get_newsapi_articles(topic, max_results, sort_by)
+    perigon_list = get_perigon_articles(topic, max_results, sort_by)
+    combined = []
+    seen = set()
+    for src_list in (newsapi_list, perigon_list):
+        for a in src_list:
+            url = (a.get("url") or "").strip().lower()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            combined.append({
+                "title": a.get("title", "").strip(),
+                "url": a.get("url", "").strip(),
+                "source": a.get("source", "").strip(),
+                "author": a.get("author", "").strip(),
+                "publishedAt": a.get("publishedAt", ""),
+            })
+    return combined
 
 def hunter_email(domain: str):
     if not HUNTER_API_KEY:
@@ -79,13 +170,11 @@ def hunter_email(domain: str):
         return None
 
 def outlet_weight_for(outlet_name: str):
-    # Normalize a bit: some outlets in API responses include suffixes, make a simple match
     if not outlet_name:
         return DEFAULT_WEIGHT
     cleaned = outlet_name.strip()
     if cleaned in TOP_TIER_OUTLETS:
         return TOP_TIER_WEIGHT
-    # try a looser comparison (case-insensitive)
     for t in TOP_TIER_OUTLETS:
         if cleaned.lower() == t.lower():
             return TOP_TIER_WEIGHT
@@ -103,8 +192,8 @@ def login():
             st.session_state["auth"] = True
     return st.session_state.get("auth", False)
 
-st.title("📰 Reporter Finder — Weighted by Outlet Prominence")
-st.caption("Search by topic; results aggregate reporters and weight scores by outlet prominence.")
+st.title("📰 Reporter Finder — Weighted by Outlet Prominence (NewsAPI + Perigon)")
+st.caption("Search by topic; results aggregate reporters; sources fetched in parallel from NewsAPI and Perigon.")
 
 if not login():
     st.stop()
@@ -112,8 +201,8 @@ if not login():
 with st.sidebar:
     st.header("Search Settings")
     topic = st.text_input("Topic", placeholder="e.g., AI in healthcare")
-    max_results = st.slider("Articles to fetch", 20, 200, 100)
-    sort_by = st.selectbox("Sort articles by (NewsAPI)", ["relevancy", "publishedAt", "popularity"], index=1)
+    max_results = st.slider("Articles to fetch (per source)", 20, 200, 100)
+    sort_by = st.selectbox("Sort articles by", ["relevancy", "publishedAt", "popularity"], index=1)
     enrich_emails = st.checkbox("Enrich with emails (Hunter.io)", value=bool(HUNTER_API_KEY))
     run = st.button("Search & Aggregate Reporters")
 
@@ -122,16 +211,16 @@ if run:
         st.error("Please enter a topic.")
         st.stop()
 
-    with st.spinner("Searching news and aggregating by reporter…"):
-        articles = search_news(topic, max_results, sort_by)
+    with st.spinner("Fetching from NewsAPI + Perigon and aggregating by reporter…"):
+        articles = search_articles(topic, max_results, sort_by)
 
-    # Aggregate articles by author
+    # Aggregate by reporter
     reporters = {}
     for a in articles:
         author = (a.get("author") or "").strip()
         title = (a.get("title") or "").strip()
         url = a.get("url")
-        outlet = (a.get("source", {}).get("name") or "").strip()
+        outlet = (a.get("source") or "").strip()
         published = a.get("publishedAt")
 
         if not author or not url:
@@ -151,24 +240,19 @@ if run:
             "published": published
         })
 
-    # Build scored list
     rows = []
     for author, info in reporters.items():
         articles_list = info["articles"]
         count = len(articles_list)
-        # compute outlet-weighted multiplier as max of outlet weights for that author
         weights = [outlet_weight_for(o) for o in info["outlets"] if o]
-        # if author has multiple outlets, use max weight to favor articles published in top outlets
         outlet_multiplier = max(weights) if weights else DEFAULT_WEIGHT
         score = count * outlet_multiplier
-        # sort author's articles by published date desc and keep top 5
         try:
             articles_sorted = sorted(articles_list, key=lambda x: dateparser.parse(x.get("published") or ""), reverse=True)
         except Exception:
             articles_sorted = articles_list
         top_articles = articles_sorted[:5]
         outlets_str = ", ".join(sorted({o for o in info["outlets"] if o}))
-        # optional email lookup (try to grab domain from first article)
         email = ""
         if enrich_emails and top_articles:
             domain = extract_domain(top_articles[0].get("url") or "") or ""
@@ -189,41 +273,33 @@ if run:
 
     df = pd.DataFrame(rows).sort_values(by=["Score", "ArticlesMatched"], ascending=False)
 
-    st.success(f"Found {len(df)} reporters. Sorted by score (article_count × outlet weight).")
-
-    # Display table (Reporter | Outlets | #Articles | Score | Email) and expanders for each reporter
+    st.success(f"Found {len(df)} reporters. (Merged from NewsAPI + Perigon)")
     st.markdown("---")
-    for idx, r in df.reset_index(drop=True).iterrows():
+    for _, r in df.reset_index(drop=True).iterrows():
         with st.container():
             cols = st.columns([3, 3, 1, 1, 1])
             cols[0].markdown(f"**{r['Reporter']}**")
             cols[1].write(r['Outlets'])
             cols[2].write(int(r['ArticlesMatched']))
             cols[3].write(float(r['Score']))
-            if r['Email']:
-                cols[4].write(r['Email'])
-            else:
-                cols[4].write("")
+            cols[4].write(r['Email'] or "")
             with st.expander("Recent articles (click to open)"):
                 for art in r['TopArticles']:
                     title = art.get('title') or art.get('url')
                     url = art.get('url')
                     pub = art.get('published') or ''
-                    # render as a markdown hyperlink
                     st.markdown(f"- [{title}]({url}) <small>({pub})</small>", unsafe_allow_html=True)
 
-    # CSV download
-    csv_rows = []
-    for r in rows:
-        csv_rows.append({
-            'Reporter': r['Reporter'],
-            'Outlets': r['Outlets'],
-            'ArticlesMatched': r['ArticlesMatched'],
-            'Score': r['Score'],
-            'Email': r['Email'],
-        })
-    csv_df = pd.DataFrame(csv_rows).sort_values(by=['Score', 'ArticlesMatched'], ascending=False)
-    csv = csv_df.to_csv(index=False).encode('utf-8')
-    st.download_button('📥 Download reporters CSV', data=csv, file_name='reporters_weighted.csv', mime='text/csv')
+    # CSV export
+    csv_rows = [{
+        "Reporter": r["Reporter"],
+        "Outlets": r["Outlets"],
+        "ArticlesMatched": r["ArticlesMatched"],
+        "Score": r["Score"],
+        "Email": r["Email"],
+    } for r in rows]
+    csv_df = pd.DataFrame(csv_rows).sort_values(by=["Score", "ArticlesMatched"], ascending=False)
+    csv = csv_df.to_csv(index=False).encode("utf-8")
+    st.download_button("📥 Download reporters CSV", data=csv, file_name="reporters_weighted_merged.csv", mime="text/csv")
 
 st.markdown("<small>Use responsibly. Verify contacts before outreach.</small>", unsafe_allow_html=True)
