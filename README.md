@@ -1,18 +1,11 @@
-# Reporter Finder — Articles & Reporters (with Date Filters, Caching, Scoring)
+# Reporter Finder — Themed (Light)
 
-Two-tab Streamlit app:
-- **Articles**: merged NewsAPI + Perigon article results (date range supported)
-- **Reporters**: aggregated by author with outlet weighting and scoring modes (frequency/prominence/recency/hybrid)
-- Caching to reduce API calls
-- Optional enrichment: Hunter.io emails, Perigon journalist profile lookup
-
-## Secrets
-Add these in Streamlit Secrets:
-
-```
-NEWS_API_KEY = "your_newsapi_key"
-PERIGON_API_KEY = "your_perigon_key"
-HUNTER_API_KEY = "your_hunter_key"  # optional
-APP_USERNAME = "admin"               # optional
-APP_PASSWORD = "change-me"           # optional
-```
+Includes:
+- Light theme using custom palette (#055258, #35ce8d, #6ba292, #e5e0e0, #303030)
+- Subtle app header bar
+- Tabs (Articles & Reporters), merged NewsAPI + Perigon
+- Hidden login after auth + 'Signed in as' indicator
+- Removed 'publishedAt' sort option
+- Color-coded score badges
+- Date range filters, caching, scoring modes
+- Optional Hunter.io and Perigon journalist enrichment

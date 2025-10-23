@@ -6,33 +6,126 @@ from dateutil import parser as dateparser
 import streamlit as st
 import pandas as pd
 import requests
-import math
 
 # ===== Config =====
 st.set_page_config(page_title="Reporter Finder — Articles & Reporters", page_icon="📰", layout="wide")
 
+# ===== Theme (Light) =====
+PRIMARY = "#055258"   # headings
+ACCENT = "#35ce8d"    # primary accent
+SAGE = "#6ba292"      # secondary accent
+SOFT_WHITE = "#e5e0e0" # background
+DARK = "#303030"      # text
+
+THEME_CSS = f"""
+<style>
+  :root {{
+    --primary: {PRIMARY};
+    --accent: {ACCENT};
+    --sage: {SAGE};
+    --bg: {SOFT_WHITE};
+    --text: {DARK};
+  }}
+  .stApp {{
+    background: var(--bg);
+    color: var(--text);
+  }}
+  h1, h2, h3, h4, h5, h6 {{
+    color: var(--primary);
+  }}
+  /* Header bar */
+  .app-header {{
+    background: linear-gradient(to right, rgba(5,82,88,0.12), rgba(53,206,141,0.12));
+    border: 1px solid rgba(5,82,88,0.15);
+    padding: 14px 18px;
+    border-radius: 14px;
+    margin-bottom: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  }}
+  .app-header h1 {{
+    margin: 0;
+    font-size: 1.6rem;
+    line-height: 1.2;
+  }}
+  .app-sub {{
+    margin-top: 4px;
+    color: var(--text);
+    opacity: 0.85;
+    font-size: 0.95rem;
+  }}
+  /* Cards */
+  .card {{
+    background: #ffffff20;
+    border: 1px solid rgba(0,0,0,0.05);
+    border-radius: 16px;
+    padding: 14px;
+    margin: 10px 0 16px 0;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+  }}
+  .badge {{
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-right: 6px;
+    margin-top: 6px;
+  }}
+  .badge-outlet {{
+    background: rgba(107,162,146,0.18);
+    color: var(--text);
+    border: 1px solid rgba(107,162,146,0.35);
+  }}
+  .badge-score-low {{
+    background: rgba(107,162,146,0.32);
+    color: var(--text);
+    border: 1px solid rgba(107,162,146,0.5);
+  }}
+  .badge-score-mid {{
+    background: rgba(53,206,141,0.28);
+    color: var(--text);
+    border: 1px solid rgba(53,206,141,0.5);
+  }}
+  .badge-score-high {{
+    background: rgba(5,82,88,0.28);
+    color: #fff;
+    border: 1px solid rgba(5,82,88,0.6);
+  }}
+  .badge-score-top {{
+    background: rgba(48,48,48,0.85);
+    color: #fff;
+    border: 1px solid rgba(48,48,48,0.9);
+  }}
+  .btn-primary button {{
+    background: var(--accent) !important;
+    color: var(--text) !important;
+    border-radius: 999px !important;
+    border: 1px solid rgba(0,0,0,0.1) !important;
+  }}
+  .stTabs [role="tablist"] {{ gap: 6px; }}
+  .stTabs [role="tab"] {{
+    border: 1px solid rgba(0,0,0,0.08);
+    border-bottom: 2px solid transparent;
+    padding: 8px 12px;
+    border-radius: 12px 12px 0 0;
+    background: rgba(255,255,255,0.5);
+  }}
+  .stTabs [aria-selected="true"] {{
+    border-color: rgba(5,82,88,0.28);
+    border-bottom: 2px solid var(--primary);
+    background: rgba(5,82,88,0.06);
+  }}
+</style>
+"""
+
+st.markdown(THEME_CSS, unsafe_allow_html=True)
+
 # ===== Top-tier outlets (starter set) =====
 TOP_TIER_OUTLETS = {
-    "The New York Times",
-    "The Washington Post",
-    "Reuters",
-    "Bloomberg",
-    "BBC News",
-    "CNN",
-    "The Wall Street Journal",
-    "Financial Times",
-    "The Guardian",
-    "Politico",
-    "NPR",
-    "Associated Press",
-    "Los Angeles Times",
-    "TIME",
-    "Forbes",
-    "Fortune",
-    "Vox",
-    "Axios",
-    "The Atlantic",
-    "NBC News",
+    "The New York Times", "The Washington Post", "Reuters", "Bloomberg", "BBC News",
+    "CNN", "The Wall Street Journal", "Financial Times", "The Guardian", "Politico",
+    "NPR", "Associated Press", "Los Angeles Times", "TIME", "Forbes",
+    "Fortune", "Vox", "Axios", "The Atlantic", "NBC News",
 }
 TOP_TIER_WEIGHT = 2.0
 DEFAULT_WEIGHT = 1.0
@@ -55,12 +148,6 @@ def extract_domain(url: str):
     m = re.match(r"https?://([^/]+)/?", url or "")
     return m.group(1) if m else None
 
-def iso_date(d: date):
-    if not d:
-        return None
-    return datetime(d.year, d.month, d.day).isoformat()
-
-# ===== Caching =====
 @st.cache_data(show_spinner=False, ttl=300)
 def cached_get(url, params, headers=None):
     try:
@@ -108,7 +195,6 @@ def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str
     url = "https://api.goperigon.com/v1/all"
     perigon_sort = "relevance" if sort_by == "relevancy" else "date"
     params = {"q": topic, "apiKey": PERIGON_API_KEY, "size": max_results, "sortBy": perigon_sort}
-    # Perigon date params commonly accept 'from'/'to' in ISO; if unsupported, API will ignore.
     if d_from:
         params["from"] = d_from
     if d_to:
@@ -121,14 +207,13 @@ def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str
     for it in items:
         title = (it.get("title") or it.get("headline") or "").strip()
         url_ = it.get("url") or it.get("link") or ""
-        # source normalization
-        source_name = ""
         src = it.get("source")
         if isinstance(src, dict):
             source_name = (src.get("name") or src.get("domain") or "").strip()
         elif isinstance(src, str):
             source_name = src.strip()
-        # author normalization
+        else:
+            source_name = ""
         author = ""
         if isinstance(it.get("author"), str):
             author = it["author"].strip()
@@ -177,6 +262,11 @@ def perigon_find_journalist(author_name: str, topic_query: str = ""):
     if isinstance(profile["sources"], list):
         profile["sources"] = [str(s) for s in profile["sources"]]
     return profile
+
+def iso_date(d: date):
+    if not d:
+        return None
+    return datetime(d.year, d.month, d.day).isoformat()
 
 # ---- Unified fetch & dedupe ----
 def search_articles(topic: str, max_results: int, sort_by: str, d_from: str=None, d_to: str=None):
@@ -230,7 +320,6 @@ def recency_weight(published_iso: str, half_life_days: float = 30.0):
         if not dt:
             return 1.0
         days_old = max(0.0, (datetime.utcnow() - dt.replace(tzinfo=None)).total_seconds() / 86400.0)
-        # Exponential decay: weight halves every 'half_life_days'
         return pow(0.5, days_old / half_life_days)
     except Exception:
         return 1.0
@@ -243,39 +332,47 @@ def compute_score(articles_list, outlets_set, method: str):
     if method == "Prominence-weighted":
         return float(count) * prominence
     if method == "Recency-weighted":
-        # sum of recency weights over articles
         return sum(recency_weight(a.get("published")) for a in articles_list)
     if method == "Hybrid (Freq × Prominence × Recency)":
         rec = sum(recency_weight(a.get("published")) for a in articles_list)
-        # normalize recency by number of articles to avoid double-counting when multiplying
         rec_norm = rec / max(1.0, count)
         return float(count) * prominence * rec_norm
     return float(count)
 
 # ===== UI / Auth =====
-def login():
+def login_block():
     if not APP_USERNAME or not APP_PASSWORD:
         return True
-    with st.sidebar:
-        st.subheader("🔐 Login")
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.button("Sign in") and u == APP_USERNAME and p == APP_PASSWORD:
-            st.session_state["auth"] = True
+    if st.session_state.get("auth", False):
+        st.markdown(f"✅ **Signed in as {APP_USERNAME}**")
+        return True
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
+    if st.button("Sign in", type="primary") and u == APP_USERNAME and p == APP_PASSWORD:
+        st.session_state["auth"] = True
+        st.experimental_rerun()
     return st.session_state.get("auth", False)
 
-st.title("📰 Reporter Finder — Articles & Reporters (NewsAPI + Perigon)")
-st.caption("Date filters, caching, and scoring controls included. Optional Hunter.io emails and Perigon journalist enrichment.")
+def render_header():
+    st.markdown(f"""
+    <div class="app-header">
+      <h1>📰 Reporter Finder</h1>
+      <div class="app-sub">Search by topic to find relevant articles and rank reporters, with optional enrichment.</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-if not login():
-    st.stop()
+# ===== Main =====
+render_header()
 
 with st.sidebar:
-    st.header("Search Settings")
+    st.subheader("Authentication")
+    if not login_block():
+        st.stop()
+
+    st.subheader("Search Settings")
     topic = st.text_input("Topic", placeholder="e.g., AI in healthcare")
     max_results = st.slider("Articles to fetch (per source)", 20, 200, 100)
-    sort_by = st.selectbox("Sort articles by", ["relevancy", "publishedAt", "popularity"], index=1)
-    # Date range (default last 30 days)
+    sort_by = st.selectbox("Sort articles by", ["relevancy", "popularity"], index=0)  # 'publishedAt' removed
     today = datetime.utcnow().date()
     default_from = today - timedelta(days=30)
     d_range = st.date_input("Date range", (default_from, today))
@@ -283,14 +380,17 @@ with st.sidebar:
         d_from_val, d_to_val = d_range
     else:
         d_from_val, d_to_val = default_from, today
+    def iso_date(d: date):
+        if not d:
+            return None
+        return datetime(d.year, d.month, d.day).isoformat()
     d_from_iso = iso_date(d_from_val)
-    # Add one day to 'to' to be inclusive
     d_to_iso = iso_date(d_to_val + timedelta(days=1))
 
     enrich_emails = st.checkbox("Enrich with emails (Hunter.io)", value=bool(HUNTER_API_KEY))
     enrich_journalists = st.checkbox("Enrich reporter profiles (Perigon)", value=bool(PERIGON_API_KEY))
     scoring_method = st.selectbox("Scoring method", ["Frequency only", "Prominence-weighted", "Recency-weighted", "Hybrid (Freq × Prominence × Recency)"], index=1)
-    run = st.button("Search")
+    run = st.button("Search", type="primary")
 
 if run:
     if not topic.strip():
@@ -330,7 +430,6 @@ if run:
 
     # === Reporters Tab ===
     with tab_reporters:
-        # Aggregate by reporter
         reporters = {}
         for a in articles:
             author = (a.get("author") or "").strip()
@@ -338,98 +437,94 @@ if run:
             url = a.get("url")
             outlet = (a.get("source") or "").strip()
             published = a.get("publishedAt")
-
             if not author or not url:
                 continue
-
-            if author not in reporters:
-                reporters[author] = {
-                    "author": author,
-                    "outlets": set(),
-                    "articles": [],
-                    "profile": {},  # Perigon journalist enrichment
-                }
+            reporters.setdefault(author, {"author": author, "outlets": set(), "articles": [], "profile": {}})
             reporters[author]["outlets"].add(outlet)
-            reporters[author]["articles"].append({
-                "title": title,
-                "url": url,
-                "outlet": outlet,
-                "published": published
-            })
+            reporters[author]["articles"].append({"title": title, "url": url, "outlet": outlet, "published": published})
 
-        # Build rows with weighting + optional enrichment
         rows = []
         for author, info in reporters.items():
-            articles_list = info["articles"]
-            outlets_set = info["outlets"]
-            score = compute_score(articles_list, outlets_set, scoring_method)
+            arts = info["articles"]
+            outs = info["outlets"]
+            prominence = max([outlet_weight_for(o) for o in outs if o] or [DEFAULT_WEIGHT])
+            if scoring_method == "Frequency only":
+                score = float(len(arts))
+            elif scoring_method == "Prominence-weighted":
+                score = float(len(arts)) * prominence
+            elif scoring_method == "Recency-weighted":
+                score = sum(recency_weight(a.get("published")) for a in arts)
+            else:
+                rec = sum(recency_weight(a.get("published")) for a in arts)
+                rec_norm = rec / max(1.0, len(arts))
+                score = float(len(arts)) * prominence * rec_norm
             try:
-                articles_sorted = sorted(articles_list, key=lambda x: dateparser.parse(x.get("published") or ""), reverse=True)
+                arts_sorted = sorted(arts, key=lambda x: dateparser.parse(x.get("published") or ""), reverse=True)
             except Exception:
-                articles_sorted = articles_list
-            top_articles = articles_sorted[:5]
-            outlets_str = ", ".join(sorted({o for o in outlets_set if o}))
+                arts_sorted = arts
+            top_articles = arts_sorted[:5]
+            outlets_str = ", ".join(sorted({o for o in outs if o}))
             email = ""
             if enrich_emails and top_articles:
                 domain = extract_domain(top_articles[0].get("url") or "") or ""
                 if domain:
                     email = hunter_email(domain) or ""
-            profile = {}
-            if enrich_journalists:
-                profile = perigon_find_journalist(author, topic_query=topic) or {}
-            rows.append({
-                "Reporter": author,
-                "Outlets": outlets_str,
-                "ArticlesMatched": len(articles_list),
-                "Score": score,
-                "TopArticles": top_articles,
-                "Email": email,
-                "Profile": profile,
-            })
+            profile = perigon_find_journalist(author, topic_query=topic) if enrich_journalists else {}
+            rows.append({"Reporter": author, "Outlets": outlets_str, "ArticlesMatched": len(arts), "Score": score, "TopArticles": top_articles, "Email": email, "Profile": profile})
 
         if not rows:
             st.warning("No reporters found.")
         else:
             df = pd.DataFrame(rows).sort_values(by=["Score", "ArticlesMatched"], ascending=False)
-            st.success(f"Found {len(df)} reporters (merged from NewsAPI + Perigon). Scoring: {scoring_method}.")
+            st.success(f"Found {len(df)} reporters (merged from NewsAPI + Perigon).")
             st.markdown("---")
             for _, r in df.reset_index(drop=True).iterrows():
-                with st.container():
-                    cols = st.columns([3, 3, 1, 1, 1])
-                    header = r['Reporter']
-                    title_suffix = ""
-                    prof = r.get("Profile") or {}
-                    if prof.get("title"):
-                        title_suffix = f" — {prof['title']}"
-                    cols[0].markdown(f"**{header}**{title_suffix}")
-                    cols[1].write(r['Outlets'])
-                    cols[2].write(int(r['ArticlesMatched']))
-                    cols[3].write(round(float(r['Score']), 3))
-                    cols[4].write(r['Email'] or "")
+                sc = float(r['Score'])
+                if sc > 10:
+                    sc_cls = "badge-score-top"
+                elif sc > 5:
+                    sc_cls = "badge-score-high"
+                elif sc > 2:
+                    sc_cls = "badge-score-mid"
+                else:
+                    sc_cls = "badge-score-low"
 
-                    with st.expander("Recent articles (click to open)"):
-                        for art in r['TopArticles']:
-                            title = art.get('title') or art.get('url')
-                            url = art.get('url')
-                            pub = art.get('published') or ''
-                            st.markdown(f"- [{title}]({url}) <small>({pub})</small>", unsafe_allow_html=True)
+                st.markdown('<div class="card">', unsafe_allow_html=True)
+                cols = st.columns([3, 3, 1, 1, 1])
+                header = r['Reporter']
+                title_suffix = ""
+                prof = r.get("Profile") or {}
+                if prof.get("title"):
+                    title_suffix = f" — {prof['title']}"
+                cols[0].markdown(f"**{header}**{title_suffix}")
+                cols[1].write(r['Outlets'])
+                cols[2].write(int(r['ArticlesMatched']))
+                cols[3].markdown(f'<span class="badge {sc_cls}">Score: {sc:.2f}</span>', unsafe_allow_html=True)
+                cols[4].write(r['Email'] or "")
 
-                    if prof:
-                        with st.expander("Journalist profile (Perigon)"):
-                            if prof.get("bio"):
-                                st.markdown(f"**Bio:** {prof['bio']}")
-                            meta_cols = st.columns(3)
-                            meta_cols[0].markdown(f"**Location:** {prof.get('location','')}")
-                            meta_cols[1].markdown(f"**Twitter:** {prof.get('twitter','')}")
-                            meta_cols[2].markdown(f"**LinkedIn:** {prof.get('linkedin','')}")
-                            topics = prof.get("topics") or []
-                            sources = prof.get("sources") or []
-                            if topics:
-                                st.markdown("**Top topics:** " + ", ".join(topics[:10]))
-                            if sources:
-                                st.markdown("**Top sources:** " + ", ".join(sources[:10]))
+                with st.expander("Recent articles (click to open)"):
+                    for art in r['TopArticles']:
+                        title = art.get('title') or art.get('url')
+                        url = art.get('url')
+                        pub = art.get('published') or ''
+                        st.markdown(f"- [{title}]({url}) <small>({pub})</small>", unsafe_allow_html=True)
 
-            # CSV export (reporter-level)
+                if prof:
+                    with st.expander("Journalist profile (Perigon)"):
+                        if prof.get("bio"):
+                            st.markdown(f"**Bio:** {prof['bio']}")
+                        meta_cols = st.columns(3)
+                        meta_cols[0].markdown(f"**Location:** {prof.get('location','')}")
+                        meta_cols[1].markdown(f"**Twitter:** {prof.get('twitter','')}")
+                        meta_cols[2].markdown(f"**LinkedIn:** {prof.get('linkedin','')}")
+                        topics = prof.get("topics") or []
+                        sources = prof.get("sources") or []
+                        if topics:
+                            st.markdown("**Top topics:** " + ", ".join(topics[:10]))
+                        if sources:
+                            st.markdown("**Top sources:** " + ", ".join(sources[:10]))
+                st.markdown('</div>', unsafe_allow_html=True)
+
             csv_rows = [{
                 "Reporter": r["Reporter"],
                 "Outlets": r["Outlets"],
@@ -441,6 +536,6 @@ if run:
             } for r in rows]
             csv_df = pd.DataFrame(csv_rows).sort_values(by=["Score", "ArticlesMatched"], ascending=False)
             csv = csv_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download reporters CSV", data=csv, file_name="reporters_scored.csv", mime="text/csv")
+            st.download_button("📥 Download reporters CSV", data=csv, file_name="reporters_themed.csv", mime="text/csv")
 
-st.markdown("<small>Use responsibly. Verify contacts before outreach and follow each API’s terms.</small>", unsafe_allow_html=True)
+st.caption("Use responsibly. Verify contacts before outreach and follow each API’s terms.")
