@@ -1,6 +1,5 @@
 streamlit==1.37.0
+pandas==2.2.2
+requests==2.32.3
+python-dateutil==2.9.0.post0
 rich==13.7.1
-pandas>=2.0,<3
-requests>=2.31
-python-dotenv>=1.0
-streamlit-tags==1.2.8

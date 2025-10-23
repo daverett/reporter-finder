@@ -1,1 +1,14 @@
-# Reporter Finder — Themed v2 (Reporters First)\n\nWhat's new:\n- Full-width dark teal header (title flush-left) with off-white text\n- Mint green accent on buttons, checkboxes, and sliders\n- Reporters tab is primary; Articles is secondary\n- Include/Exclude outlet filters and Min-articles threshold\n- Beat/topic chips on reporter cards (Perigon topics or inferred from titles)\n- XLSX export (Reporters + TopArticles sheets)\n- All prior features (NewsAPI + Perigon, date range, caching, scoring, enrichment)\n
+# Reporter Finder — Dependency Fix
+
+This patch resolves the dependency conflict between **Streamlit 1.37.0** and **rich 14.x**.
+
+## What's Changed
+- Pinned `rich` to version **13.7.1** (compatible with Streamlit 1.37)
+- Added `runtime.txt` to enforce **Python 3.11** in Streamlit Cloud
+
+## Deploy Instructions
+1. Replace your existing `requirements.txt` with this version.
+2. Add `runtime.txt` to your repository root.
+3. Redeploy your app on Streamlit Cloud.
+
+This ensures dependency stability and prevents `pip resolver` warnings.
