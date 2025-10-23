@@ -1,4 +1,3 @@
-
 import os
 import re
 from datetime import datetime, timedelta, date
@@ -6,80 +5,135 @@ import streamlit as st
 import pandas as pd
 import requests
 from dateutil import parser as dateparser
+from collections import Counter
 
-# ====================
-# CONFIG & THEME
-# ====================
-st.set_page_config(page_title="Reporter Finder — Articles & Reporters", page_icon="📰", layout="wide")
+st.set_page_config(page_title="Reporter Finder — Reporters First", page_icon="📰", layout="wide")
 
-# Initialize session state
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# Palette
-PRIMARY = "#055258"    # headings
-ACCENT = "#35ce8d"     # primary accent
-SAGE = "#6ba292"       # secondary accent
-SOFT_WHITE = "#e5e0e0" # background
-DARK = "#303030"       # text
+PRIMARY = "#055258"
+ACCENT = "#35ce8d"
+SAGE = "#6ba292"
+SOFT_WHITE = "#e5e0e0"
+DARK = "#303030"
 
-THEME_CSS = f'''
+THEME_CSS = f"""
 <style>
   :root {{
     --primary: {PRIMARY};
     --accent: {ACCENT};
     --sage: {SAGE};
-    --bg: {SOFT_WHITE};
+    --bg: #ffffff;
     --text: {DARK};
+    --soft: {SOFT_WHITE};
   }}
   .stApp {{
     background: var(--bg);
     color: var(--text);
   }}
-  h1, h2, h3, h4, h5, h6 {{ color: var(--primary); }}
-  .app-header {{
-    background: linear-gradient(to right, rgba(5,82,88,0.12), rgba(53,206,141,0.12));
-    border: 1px solid rgba(5,82,88,0.15);
-    padding: 14px 18px;
-    border-radius: 14px;
-    margin-bottom: 12px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  .topbar {{
+    width: 100%;
+    background: var(--primary);
+    color: var(--soft);
+    padding: 18px 20px;
+    margin: -3rem -1rem 1rem -1rem;
   }}
-  .app-header h1 {{ margin: 0; font-size: 1.6rem; line-height: 1.2; }}
-  .app-sub {{ margin-top: 4px; color: var(--text); opacity: 0.85; font-size: 0.95rem; }}
+  .topbar h1 {{
+    margin: 0;
+    font-size: 1.6rem;
+    line-height: 1.2;
+    text-align: left;
+    color: var(--soft);
+  }}
+  .topbar .sub {{
+    margin-top: 4px;
+    opacity: 0.95;
+    color: var(--soft);
+  }}
   .card {{
-    background: #ffffff20;
-    border: 1px solid rgba(0,0,0,0.05);
-    border-radius: 16px;
+    background: #ffffff;
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 14px;
     padding: 14px;
-    margin: 10px 0 16px 0;
-    box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+    margin: 8px 0 14px 0;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.05);
   }}
   .badge {{
-    display: inline-block; padding: 4px 8px; border-radius: 999px;
-    font-size: 0.8rem; font-weight: 600; margin-right: 6px; margin-top: 6px;
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    margin-right: 6px;
+    margin-top: 6px;
+    border: 1px solid rgba(0,0,0,0.06);
   }}
-  .badge-score-low {{ background: rgba(107,162,146,0.32); color: var(--text); border: 1px solid rgba(107,162,146,0.5); }}
-  .badge-score-mid {{ background: rgba(53,206,141,0.28); color: var(--text); border: 1px solid rgba(53,206,141,0.5); }}
-  .badge-score-high {{ background: rgba(5,82,88,0.28); color: #fff; border: 1px solid rgba(5,82,88,0.6); }}
-  .badge-score-top {{ background: rgba(48,48,48,0.85); color: #fff; border: 1px solid rgba(48,48,48,0.9); }}
+  .badge-topic {{
+    background: rgba(53,206,141,0.15);
+    color: var(--text);
+    border-color: rgba(53,206,141,0.35);
+  }}
+  .badge-outlet {{
+    background: rgba(107,162,146,0.18);
+    color: var(--text);
+    border-color: rgba(107,162,146,0.35);
+  }}
+  .badge-score-low {{
+    background: rgba(107,162,146,0.32);
+    color: var(--text);
+    border-color: rgba(107,162,146,0.5);
+  }}
+  .badge-score-mid {{
+    background: rgba(53,206,141,0.28);
+    color: var(--text);
+    border-color: rgba(53,206,141,0.5);
+  }}
+  .badge-score-high {{
+    background: rgba(5,82,88,0.28);
+    color: #fff;
+    border-color: rgba(5,82,88,0.6);
+  }}
+  .badge-score-top {{
+    background: rgba(48,48,48,0.85);
+    color: #fff;
+    border-color: rgba(48,48,48,0.9);
+  }}
+  .stButton > button {{
+    background: var(--accent) !important;
+    color: var(--text) !important;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 999px;
+  }}
+  input[type="checkbox"] {{ accent-color: var(--accent); }}
+  [data-testid="stSlider"] > div > div > div > div {{
+    background: rgba(53,206,141,0.35);
+  }}
+  [data-testid="stSlider"] .st-bk {{
+    background: rgba(53,206,141,0.35);
+  }}
+  [data-testid="stSlider"] .st-c0 {{
+    background: var(--accent);
+  }}
   .stTabs [role="tablist"] {{ gap: 6px; }}
   .stTabs [role="tab"] {{
-    border: 1px solid rgba(0,0,0,0.08); border-bottom: 2px solid transparent;
-    padding: 8px 12px; border-radius: 12px 12px 0 0; background: rgba(255,255,255,0.5);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-bottom: 2px solid transparent;
+    padding: 8px 12px;
+    border-radius: 12px 12px 0 0;
+    background: rgba(53,206,141,0.06);
   }}
   .stTabs [aria-selected="true"] {{
-    border-color: rgba(5,82,88,0.28); border-bottom: 2px solid var(--primary); background: rgba(5,82,88,0.06);
+    border-color: rgba(53,206,141,0.28);
+    border-bottom: 2px solid var(--accent);
+    background: rgba(53,206,141,0.12);
   }}
 </style>
-'''
+"""
 st.markdown(THEME_CSS, unsafe_allow_html=True)
-
-# ====================
-# CONSTANTS & SECRETS
-# ====================
+\n
 TOP_TIER_OUTLETS = {
     "The New York Times", "The Washington Post", "Reuters", "Bloomberg", "BBC News",
     "CNN", "The Wall Street Journal", "Financial Times", "The Guardian", "Politico",
@@ -89,7 +143,6 @@ TOP_TIER_OUTLETS = {
 TOP_TIER_WEIGHT = 2.0
 DEFAULT_WEIGHT = 1.0
 
-# Secrets
 try:
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
 except Exception:
@@ -101,10 +154,7 @@ except Exception:
 HUNTER_API_KEY = st.secrets.get("HUNTER_API_KEY", os.getenv("HUNTER_API_KEY", ""))
 APP_USERNAME = st.secrets.get("APP_USERNAME", os.getenv("APP_USERNAME", ""))
 APP_PASSWORD = st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", ""))
-
-# ====================
-# HELPERS & CACHING
-# ====================
+\n
 def extract_domain(url: str):
     m = re.match(r"https?://([^/]+)/?", url or "")
     return m.group(1) if m else None
@@ -117,7 +167,6 @@ def cached_get(url, params, headers=None):
     except Exception as e:
         return -1, {"error": str(e)}
 
-# NewsAPI
 def get_newsapi_articles(topic: str, max_results: int, sort_by: str, d_from: str=None, d_to: str=None):
     if not NEWS_API_KEY:
         return []
@@ -142,7 +191,6 @@ def get_newsapi_articles(topic: str, max_results: int, sort_by: str, d_from: str
         })
     return out
 
-# Perigon - articles
 def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str=None, d_to: str=None):
     if not PERIGON_API_KEY:
         return []
@@ -159,7 +207,6 @@ def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str
         title = (it.get("title") or it.get("headline") or "").strip()
         url_ = it.get("url") or it.get("link") or ""
         if not title or not url_: continue
-        # source
         src = it.get("source")
         if isinstance(src, dict):
             source_name = (src.get("name") or src.get("domain") or "").strip()
@@ -167,7 +214,6 @@ def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str
             source_name = src.strip()
         else:
             source_name = ""
-        # author
         author = ""
         if isinstance(it.get("author"), str): author = it["author"].strip()
         elif isinstance(it.get("authors"), list) and it["authors"]:
@@ -181,7 +227,6 @@ def get_perigon_articles(topic: str, max_results: int, sort_by: str, d_from: str
         })
     return out
 
-# Perigon - journalists (enrichment)
 @st.cache_data(show_spinner=False, ttl=3600)
 def perigon_find_journalist(author_name: str, topic_query: str = ""):
     if not PERIGON_API_KEY or not author_name: return {}
@@ -207,7 +252,6 @@ def perigon_find_journalist(author_name: str, topic_query: str = ""):
     if isinstance(prof["sources"], list): prof["sources"] = [str(s) for s in prof["sources"]]
     return prof
 
-# Combine & dedupe
 def search_articles(topic: str, max_results: int, sort_by: str, d_from: str=None, d_to: str=None):
     a = get_newsapi_articles(topic, max_results, sort_by, d_from, d_to)
     b = get_perigon_articles(topic, max_results, sort_by, d_from, d_to)
@@ -245,13 +289,8 @@ def recency_weight(published_iso: str, half_life_days: float = 30.0):
         return pow(0.5, days_old / half_life_days)
     except Exception:
         return 1.0
-
-# ====================
-# AUTH
-# ====================
+\n
 def login_block(sidebar: bool = True) -> bool:
-    """Streamlit login form with proper state handling."""
-    # If no creds configured, disable auth
     if not APP_USERNAME or not APP_PASSWORD:
         return True
     container = st.sidebar if sidebar else st
@@ -272,20 +311,14 @@ def login_block(sidebar: bool = True) -> bool:
                 st.error("Invalid username or password")
     return False
 
-# ====================
-# HEADER
-# ====================
 def render_header():
-    st.markdown('''
-    <div class="app-header">
+    st.markdown("""
+    <div class="topbar">
       <h1>📰 Reporter Finder</h1>
-      <div class="app-sub">Search by topic to find relevant articles and rank reporters, with optional enrichment.</div>
+      <div class="sub">Find and rank reporters by topic with outlet weighting and enrichment.</div>
     </div>
-    ''', unsafe_allow_html=True)
-
-# ====================
-# MAIN
-# ====================
+    """, unsafe_allow_html=True)
+\n
 render_header()
 
 with st.sidebar:
@@ -297,7 +330,6 @@ with st.sidebar:
     st.subheader("Search Settings")
     topic = st.text_input("Topic", placeholder="e.g., AI in healthcare")
     max_results = st.slider("Articles to fetch (per source)", 20, 200, 100)
-    # 'publishedAt' removed
     sort_by = st.selectbox("Sort articles by", ["relevancy", "popularity"], index=0)
     today = datetime.utcnow().date()
     default_from = today - timedelta(days=30)
@@ -310,47 +342,34 @@ with st.sidebar:
         if not d: return None
         return datetime(d.year, d.month, d.day).isoformat()
     d_from_iso = iso_date(d_from_val)
-    d_to_iso = iso_date(d_to_val + timedelta(days=1))  # inclusive
+    d_to_iso = iso_date(d_to_val + timedelta(days=1))
     enrich_emails = st.checkbox("Enrich with emails (Hunter.io)", value=bool(HUNTER_API_KEY))
     enrich_journalists = st.checkbox("Enrich reporter profiles (Perigon)", value=bool(PERIGON_API_KEY))
-    scoring_method = st.selectbox("Scoring method",
-                                  ["Frequency only", "Prominence-weighted", "Recency-weighted", "Hybrid (Freq × Prominence × Recency)"],
-                                  index=1)
+    scoring_method = st.selectbox("Scoring method", ["Frequency only", "Prominence-weighted", "Recency-weighted", "Hybrid (Freq × Prominence × Recency)"], index=1)
+    st.markdown("---")
+    st.subheader("Filters")
+    include_outlets = st.text_input("Include outlets (comma-separated)", placeholder="e.g., Reuters, The Verge")
+    exclude_outlets = st.text_input("Exclude outlets (comma-separated)", placeholder="e.g., CNN, BBC News")
+    min_articles = st.slider("Min articles per reporter", 1, 10, 1)
     run = st.button("Search", type="primary")
-
+\n
 if run:
     if not topic.strip():
         st.error("Please enter a topic."); st.stop()
     with st.spinner("Fetching from NewsAPI + Perigon…"):
         articles = search_articles(topic, max_results, sort_by, d_from_iso, d_to_iso)
-    tab_articles, tab_reporters = st.tabs(["📰 Articles", "🧑‍💼 Reporters"])
 
-    # Articles tab
-    with tab_articles:
-        if not articles:
-            st.warning("No articles found.")
-        else:
-            art_rows = []
-            for a in articles:
-                try:
-                    dt = dateparser.parse(a.get("publishedAt") or "")
-                    published_fmt = dt.strftime("%Y-%m-%d %H:%M") if dt else a.get("publishedAt") or ""
-                except Exception:
-                    published_fmt = a.get("publishedAt") or ""
-                art_rows.append({
-                    "Title": f"[{a.get('title')}]({a.get('url')})",
-                    "Outlet": a.get("source"),
-                    "Author": a.get("author"),
-                    "Published": published_fmt,
-                })
-            st.dataframe(pd.DataFrame(art_rows), use_container_width=True, hide_index=True)
-            csv_articles = pd.DataFrame([
-                {"Title": a["title"], "URL": a["url"], "Outlet": a["source"], "Author": a["author"], "PublishedAt": a["publishedAt"]}
-                for a in articles
-            ]).to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download articles CSV", data=csv_articles, file_name="articles.csv", mime="text/csv")
+    def normalize_list(s):
+        return [x.strip().lower() for x in s.split(",") if x.strip()] if s else []
+    includes = set(normalize_list(include_outlets))
+    excludes = set(normalize_list(exclude_outlets))
+    if includes:
+        articles = [a for a in articles if (a.get("source","").strip().lower() in includes)]
+    if excludes:
+        articles = [a for a in articles if (a.get("source","").strip().lower() not in excludes)]
 
-    # Reporters tab
+    tab_reporters, tab_articles = st.tabs(["🧑‍💼 Reporters", "📰 Articles"])
+
     with tab_reporters:
         reporters = {}
         for a in articles:
@@ -364,11 +383,8 @@ if run:
             reporters[author]["outlets"].add(outlet)
             reporters[author]["articles"].append({"title": title, "url": url, "outlet": outlet, "published": published})
 
-        def outlet_weight_for_local(name):  # shadow for quick use
-            return outlet_weight_for(name)
-
         def score_reporter(articles_list, outlets_set):
-            prominence = max([outlet_weight_for_local(o) for o in outlets_set if o] or [DEFAULT_WEIGHT])
+            prominence = max([outlet_weight_for(o) for o in outlets_set if o] or [DEFAULT_WEIGHT])
             if scoring_method == "Frequency only":
                 return float(len(articles_list))
             elif scoring_method == "Prominence-weighted":
@@ -384,6 +400,8 @@ if run:
         for author, info in reporters.items():
             arts = info["articles"]
             outs = info["outlets"]
+            if len(arts) < min_articles:
+                continue
             score = score_reporter(arts, outs)
             try:
                 arts_sorted = sorted(arts, key=lambda x: dateparser.parse(x.get("published") or ""), reverse=True)
@@ -396,9 +414,22 @@ if run:
                 domain = extract_domain(top_articles[0].get("url") or "") or ""
                 if domain: email = hunter_email(domain) or ""
             profile = perigon_find_journalist(author, topic_query=topic) if enrich_journalists else {}
+
+            topics = []
+            if profile and profile.get("topics"):
+                topics = list(dict.fromkeys([t for t in profile["topics"] if isinstance(t, str)]))[:8]
+            else:
+                words = []
+                for art in top_articles:
+                    title = (art.get("title") or "")
+                    words += re.findall(r"[A-Za-z][A-Za-z\-]{2,}", title)
+                common = [w for w, c in Counter([w.lower() for w in words]).most_common(30) if w.lower() not in {"the","and","for","with","from","into","over","under","about","into","your","our","are","was","were","has","have","will","can","new"}]
+                topics = common[:8]
+
             rows.append({
                 "Reporter": author, "Outlets": outlets_str, "ArticlesMatched": len(arts),
-                "Score": score, "TopArticles": top_articles, "Email": email, "Profile": profile
+                "Score": score, "TopArticles": top_articles, "Email": email,
+                "Profile": profile, "Topics": topics
             })
 
         if not rows:
@@ -425,6 +456,9 @@ if run:
                 cols[3].markdown(f'<span class="badge {sc_cls}">Score: {sc:.2f}</span>', unsafe_allow_html=True)
                 cols[4].write(r['Email'] or "")
 
+                if r.get("Topics"):
+                    st.markdown("".join([f'<span class="badge badge-topic">{t}</span>' for t in r["Topics"]]), unsafe_allow_html=True)
+
                 with st.expander("Recent articles (click to open)"):
                     for art in r['TopArticles']:
                         title = art.get('title') or art.get('url')
@@ -439,20 +473,54 @@ if run:
                         meta_cols[0].markdown(f"**Location:** {prof.get('location','')}")
                         meta_cols[1].markdown(f"**Twitter:** {prof.get('twitter','')}")
                         meta_cols[2].markdown(f"**LinkedIn:** {prof.get('linkedin','')}")
-                        topics = prof.get("topics") or []
                         sources = prof.get("sources") or []
-                        if topics: st.markdown("**Top topics:** " + ", ".join(topics[:10]))
-                        if sources: st.markdown("**Top sources:** " + ", ".join(sources[:10]))
+                        if sources:
+                            st.markdown("**Top sources:** " + ", ".join(sources[:10]))
                 st.markdown('</div>', unsafe_allow_html=True)
 
-            csv_rows = [{
-                "Reporter": r["Reporter"], "Outlets": r["Outlets"], "ArticlesMatched": r["ArticlesMatched"],
-                "Score": r["Score"], "Email": r["Email"],
-                "ProfileTitle": (r.get("Profile") or {}).get("title",""),
-                "ProfileTopics": ", ".join((r.get("Profile") or {}).get("topics", [])[:10]),
-            } for r in rows]
-            csv_df = pd.DataFrame(csv_rows).sort_values(by=["Score", "ArticlesMatched"], ascending=False)
-            csv = csv_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download reporters CSV", data=csv, file_name="reporters_merged.csv", mime="text/csv")
+            from io import BytesIO
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                rep_df = pd.DataFrame([{
+                    "Reporter": r["Reporter"], "Outlets": r["Outlets"], "ArticlesMatched": r["ArticlesMatched"],
+                    "Score": r["Score"], "Email": r["Email"],
+                    "ProfileTitle": (r.get("Profile") or {}).get("title",""),
+                    "Topics": ", ".join(r.get("Topics") or []),
+                } for r in rows]).sort_values(by=["Score","ArticlesMatched"], ascending=False)
+                rep_df.to_excel(writer, index=False, sheet_name="Reporters")
+                art_rows = []
+                for r in rows:
+                    for a in r["TopArticles"]:
+                        art_rows.append({
+                            "Reporter": r["Reporter"],
+                            "ArticleTitle": a.get("title"),
+                            "URL": a.get("url"),
+                            "Outlet": a.get("outlet"),
+                            "Published": a.get("published"),
+                        })
+                pd.DataFrame(art_rows).to_excel(writer, index=False, sheet_name="TopArticles")
+            st.download_button("📥 Download results (XLSX)", data=output.getvalue(), file_name="reporter_results.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.caption("Use responsibly. Verify contacts before outreach and follow each API’s terms.")
+    with tab_articles:
+        if not articles:
+            st.warning("No articles found.")
+        else:
+            art_rows = []
+            for a in articles:
+                try:
+                    dt = dateparser.parse(a.get("publishedAt") or "")
+                    published_fmt = dt.strftime("%Y-%m-%d %H:%M") if dt else a.get("publishedAt") or ""
+                except Exception:
+                    published_fmt = a.get("publishedAt") or ""
+                art_rows.append({
+                    "Title": f"[{a.get('title')}]({a.get('url')})",
+                    "Outlet": a.get("source"),
+                    "Author": a.get("author"),
+                    "Published": published_fmt,
+                })
+            st.dataframe(pd.DataFrame(art_rows), use_container_width=True, hide_index=True)
+            csv_articles = pd.DataFrame([
+                {"Title": a["title"], "URL": a["url"], "Outlet": a["source"], "Author": a["author"], "PublishedAt": a["publishedAt"]}
+                for a in articles
+            ]).to_csv(index=False).encode("utf-8")
+            st.download_button("📥 Download articles CSV", data=csv_articles, file_name="articles.csv", mime="text/csv")
