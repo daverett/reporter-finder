@@ -21,21 +21,113 @@ st.set_page_config(
 # --- Theme hardening
 # If Streamlit Cloud isn't picking up .streamlit/config.toml (e.g., file not committed or theme overridden),
 # force the primary color via CSS so buttons/highlights are consistently #045359.
+THEME_PRIMARY = "#045359"
+
+# Streamlit Cloud can override config.toml via app Settings > Theme. Even when that happens,
+# we still try to force the brand color through CSS so the UI stays consistent.
 st.markdown(
-    """
+    f"""
     <style>
-      :root { --primary-color: #045359; }
-      .stButton>button {
-        background-color: #045359 !important;
-        border-color: #045359 !important;
-      }
-      .stButton>button:hover {
-        filter: brightness(0.95);
-      }
-      /* Selected tabs / accents */
-      div[data-baseweb="tab"] button[aria-selected="true"] {
-        color: #045359 !important;
-      }
+      /* Try to override Streamlit's CSS variables (Cloud theme settings may set these). */
+      :root, html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {{
+        --primary-color: {THEME_PRIMARY} !important;
+        --accent-color: {THEME_PRIMARY} !important;
+        --primaryColor: {THEME_PRIMARY} !important;
+      }}
+
+      /* Buttons */
+      .stButton>button {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      .stButton>button:hover {{ filter: brightness(0.95); }}
+
+      /* Links */
+      a, a:visited {{ color: {THEME_PRIMARY} !important; }}
+
+      /* Generic form control accent (helps on newer browsers/Streamlit builds) */
+      * {{ accent-color: {THEME_PRIMARY}; }}
+
+      /* Tabs (label + underline/highlight) */
+      div[data-baseweb="tab"] button[aria-selected="true"] {{
+        color: {THEME_PRIMARY} !important;
+      }}
+      /* Broader tab selectors (Streamlit/Baseweb variants) */
+      button[role="tab"][aria-selected="true"] {{
+        color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="tab-highlight"] {{
+        background-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="tab-border"] {{
+        background-color: rgba(4, 83, 89, 0.25) !important;
+      }}
+
+      /* Slider */
+      div[data-baseweb="slider"] div[role="slider"] {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="slider"] div[role="slider"]:focus {{
+        box-shadow: 0 0 0 0.2rem rgba(4, 83, 89, 0.25) !important;
+      }}
+      div[data-baseweb="slider"] div[aria-valuenow] {{
+        background-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="slider"] div[data-testid="stTickBar"] > div {{
+        background-color: {THEME_PRIMARY} !important;
+      }}
+
+      /* Checkbox / toggle */
+      div[data-baseweb="checkbox"] input:checked + div {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="checkbox"] div[role="checkbox"][aria-checked="true"] {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="switch"] div[role="switch"][aria-checked="true"] {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="switch"] div[role="switch"][aria-checked="true"] {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+      }}
+      div[data-baseweb="checkbox"] svg {{
+        fill: white !important;
+      }}
+
+      /* Focus rings */
+      :focus-visible {{
+        outline-color: {THEME_PRIMARY} !important;
+      }}
+
+      /*
+        Streamlit Cloud "App settings → Theme" can inject the old orange theme
+        (#F06000) via inline styles on BaseWeb components (tabs, slider, etc.).
+        Inline styles beat most CSS, so we defensively override any inline
+        occurrences of the old orange to ensure the UI stays on-brand.
+      */
+      [data-testid="stAppViewContainer"] *[style*="240, 96, 0"],
+      [data-testid="stAppViewContainer"] *[style*="240,96,0"],
+      [data-testid="stAppViewContainer"] *[style*="#F06000"],
+      [data-testid="stAppViewContainer"] *[style*="#f06000"] {{
+        background-color: {THEME_PRIMARY} !important;
+        border-color: {THEME_PRIMARY} !important;
+        outline-color: {THEME_PRIMARY} !important;
+        color: {THEME_PRIMARY} !important;
+      }}
+
+      /* Some elements use the orange as an accent (e.g., underline/border). */
+      [data-testid="stAppViewContainer"] *[style*="240, 96, 0"]:not(svg),
+      [data-testid="stAppViewContainer"] *[style*="240,96,0"]:not(svg) {{
+        border-bottom-color: {THEME_PRIMARY} !important;
+        border-left-color: {THEME_PRIMARY} !important;
+        border-right-color: {THEME_PRIMARY} !important;
+        border-top-color: {THEME_PRIMARY} !important;
+      }}
     </style>
     """,
     unsafe_allow_html=True,
