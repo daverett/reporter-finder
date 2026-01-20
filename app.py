@@ -588,8 +588,7 @@ with tab_reporter:
                               pub = row.get("publishedAt")
                               pub_s = pub.strftime("%Y-%m-%d") if hasattr(pub, "strftime") else _safe_str(pub)
                               desc = highlight_terms(_safe_str(row.get("description")), primary_terms, max_len=240)
-                              st.markdown(f"- **[{title}]({url})**  
-{source_api} · {source} · {pub_s}")
+                              st.markdown(f"- **[{title}]({url})**  \n  {source_api} · {source} · {pub_s}")
                               if desc:
                                   st.caption(desc)
                       else:
