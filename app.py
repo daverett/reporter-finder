@@ -68,13 +68,13 @@ with st.sidebar:
     st.caption("Enter keywords here; tabs change how results are displayed.")
     st.divider()
 
-st.expander("Theme debug", expanded=False).write(
-    {
-        "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
-        "theme.base": st.get_option("theme.base"),
-        "config file expected at": ".streamlit/config.toml",
-    }
-)
+    st.expander("Theme debug", expanded=False).write(
+        {
+            "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
+            "theme.base": st.get_option("theme.base"),
+            "config file expected at": ".streamlit/config.toml",
+        }
+    )
 
     st.session_state.keywords = st.text_input(
         "Keywords (primary)",
