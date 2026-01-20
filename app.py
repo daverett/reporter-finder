@@ -18,6 +18,29 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- Theme hardening
+# If Streamlit Cloud isn't picking up .streamlit/config.toml (e.g., file not committed or theme overridden),
+# force the primary color via CSS so buttons/highlights are consistently #045359.
+st.markdown(
+    """
+    <style>
+      :root { --primary-color: #045359; }
+      .stButton>button {
+        background-color: #045359 !important;
+        border-color: #045359 !important;
+      }
+      .stButton>button:hover {
+        filter: brightness(0.95);
+      }
+      /* Selected tabs / accents */
+      div[data-baseweb="tab"] button[aria-selected="true"] {
+        color: #045359 !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # NewsAPI free/dev plans often restrict how far back you can query.
 NEWSAPI_FREE_MAX_DAYS = 29
 
@@ -44,6 +67,14 @@ with st.sidebar:
     st.markdown("### Reporter Finder")
     st.caption("Enter keywords here; tabs change how results are displayed.")
     st.divider()
+
+st.expander("Theme debug", expanded=False).write(
+    {
+        "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
+        "theme.base": st.get_option("theme.base"),
+        "config file expected at": ".streamlit/config.toml",
+    }
+)
 
     st.session_state.keywords = st.text_input(
         "Keywords (primary)",
