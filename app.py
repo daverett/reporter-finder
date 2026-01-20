@@ -203,7 +203,7 @@ with st.sidebar:
             label="Topics / beats (optional)",
             text="Add a topic and press Enter",
             value=st.session_state.topics,
-            suggestions=suggests := suggested,
+            suggestions=suggested,
             maxtags=12,
             key="topics_tags",
         )
