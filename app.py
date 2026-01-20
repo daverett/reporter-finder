@@ -441,11 +441,14 @@ def _load_articles() -> pd.DataFrame:
     df["author"] = df["author"].fillna("").astype(str).str.strip()
     df["source"] = df["source"].fillna("").astype(str).str.strip()
 
-    # Drop hard-blocked authors early
-    df = df[~df["author"].apply(is_blocked_author)].copy()
+    # Mark hard-blocked authors (Option B). These should *not* appear as reporters,
+    # but they are still useful to surface under the Wires/PR tab.
+    df["is_blocked"] = df["author"].apply(is_blocked_author)
 
     df["is_person"] = df["author"].apply(is_likely_person)
     df["is_wire_pr"] = df.apply(lambda r: classify_wire_pr(_safe_str(r.get("source")), _safe_str(r.get("author")), _safe_str(r.get("title"))), axis=1)
+    # Force blocked authors into the wire/PR bucket
+    df["is_wire_pr"] = df["is_wire_pr"] | df["is_blocked"]
 
     df = df.dropna(subset=["url"]).drop_duplicates(subset=["url"]).copy()
 
@@ -456,7 +459,7 @@ def _load_articles() -> pd.DataFrame:
 
 def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.DataFrame:
     if df_articles.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "apis"])
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "evidence_title", "evidence_url", "apis"])
 
     d = df_articles.copy()
     d["author"] = d["author"].fillna("").astype(str).str.strip()
@@ -468,7 +471,7 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
         d = d[d["is_person"] == False].copy()
 
     if d.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "apis"])
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "evidence_title", "evidence_url", "apis"])
 
     primary_terms = st.session_state.last_query_terms or []
 
@@ -480,6 +483,20 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
         return [k for k, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
     def _evidence_titles(group: pd.DataFrame, n: int = 2) -> str:
+
+def _evidence_top_link(group: pd.DataFrame) -> tuple[str, str]:
+    """Return (title, url) for the best single supporting article."""
+    g = group.copy()
+    g["publishedAt"] = pd.to_datetime(g["publishedAt"], errors="coerce", utc=True)
+    g = g.sort_values(["match_count", "publishedAt"], ascending=[False, False])
+    for _, row in g.head(10).iterrows():
+        title = _safe_str(row.get("title"))
+        url = _safe_str(row.get("url"))
+        if title and url:
+            terms = row.get("matched_terms") or primary_terms
+            terms = [t for t in terms if t]
+            return (highlight_terms(title, terms, max_len=140), url)
+    return ("", "")
         g = group.copy()
         g["publishedAt"] = pd.to_datetime(g["publishedAt"], errors="coerce", utc=True)
         g = g.sort_values(["match_count", "publishedAt"], ascending=[False, False])
@@ -503,6 +520,8 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
             "last_seen": pd.to_datetime(g["publishedAt"], errors="coerce", utc=True).max(),
             "matched_terms": ", ".join(_top_terms(g["matched_terms"])),
             "evidence": _evidence_titles(g),
+            "evidence_title": _evidence_top_link(g)[0],
+            "evidence_url": _evidence_top_link(g)[1],
             "apis": _apis_list(g),
         })
     ).reset_index()
@@ -539,7 +558,42 @@ with tab_reporter:
     if df_reporters is None:
         st.info("Enter keywords in the sidebar and click Search.")
     else:
-        st.dataframe(df_reporters, use_container_width=True)
+        st.dataframe(
+            df_reporters,
+            use_container_width=True,
+            column_config={
+                "evidence_url": st.column_config.LinkColumn("evidence_url", display_text="open"),
+                "evidence_title": st.column_config.TextColumn("evidence_title"),
+            },
+            hide_index=True,
+        )
+
+                      st.markdown("#### Reporter details")
+                      st.caption("Pick a reporter to see the matching articles (with keyword highlights).")
+                      reporter_options = (
+                          df_reporters["author"].fillna("").astype(str).tolist()
+                          if "author" in df_reporters.columns else []
+                      )
+                      reporter_options = [r for r in reporter_options if r]
+                      if reporter_options and df_articles is not None and not df_articles.empty:
+                          selected = st.selectbox("Reporter", options=reporter_options, index=0)
+                          subset = df_articles[df_articles["author"] == selected].copy()
+                          subset = subset.sort_values(["match_count", "publishedAt"], ascending=[False, False]).head(15)
+                          primary_terms = st.session_state.last_query_terms or []
+                          for _, row in subset.iterrows():
+                              title = highlight_terms(_safe_str(row.get("title")), primary_terms, max_len=180)
+                              url = _safe_str(row.get("url"))
+                              source_api = _safe_str(row.get("source_api"))
+                              source = _safe_str(row.get("source"))
+                              pub = row.get("publishedAt")
+                              pub_s = pub.strftime("%Y-%m-%d") if hasattr(pub, "strftime") else _safe_str(pub)
+                              desc = highlight_terms(_safe_str(row.get("description")), primary_terms, max_len=240)
+                              st.markdown(f"- **[{title}]({url})**  
+{source_api} · {source} · {pub_s}")
+                              if desc:
+                                  st.caption(desc)
+                      else:
+                          st.caption("Run a search first to enable details.")
 
 with tab_wires:
     st.subheader("Wires / PR / Organizations")
@@ -547,7 +601,15 @@ with tab_wires:
     if df_wires is None:
         st.info("Run a search to populate this tab.")
     else:
-        st.dataframe(df_wires, use_container_width=True)
+        st.dataframe(
+            df_wires,
+            use_container_width=True,
+            column_config={
+                "evidence_url": st.column_config.LinkColumn("evidence_url", display_text="open"),
+                "evidence_title": st.column_config.TextColumn("evidence_title"),
+            },
+            hide_index=True,
+        )
 
 with tab_articles:
     st.subheader("Articles")
