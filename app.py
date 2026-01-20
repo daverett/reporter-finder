@@ -284,3 +284,9 @@ with st.sidebar:
         st.session_state.search_clicked = True
 
     st.expander("Theme debug", expanded=False).write(
+    {
+        "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
+        "theme.base": st.get_option("theme.base"),
+        "config file expected at": ".streamlit/config.toml",
+    }
+)
