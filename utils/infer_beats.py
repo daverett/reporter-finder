@@ -21,7 +21,6 @@ KEYWORD_TO_TOPIC = {
     "congress": "politics",
     "supreme court": "politics",
     "election": "elections",
-    "ice": "politics",
     "tariff": "finance",
     "inflation": "finance",
     "cyber": "cybersecurity",
@@ -30,7 +29,6 @@ KEYWORD_TO_TOPIC = {
     "climate": "climate",
     "vaccine": "health",
     "health": "health",
-    "hollywood": "culture",
     "music": "culture",
     "sports": "sports",
 }
@@ -50,20 +48,15 @@ def normalize_topics(topics: List[str]) -> List[str]:
 def infer_topics_from_text(text: str, extra_hints: Optional[List[str]] = None, max_topics: int = 6) -> List[str]:
     if not text:
         return normalize_topics(extra_hints or [])[:max_topics]
-
     t = text.lower()
     hits: List[str] = []
-
     for needle, topic in KEYWORD_TO_TOPIC.items():
         if needle in t:
             hits.append(topic)
-
     for h in (extra_hints or []):
         if h and h.lower() in t:
             hits.append(h)
-
     hits = normalize_topics(hits)
     if not hits and extra_hints:
         hits = normalize_topics(extra_hints)
-
     return hits[:max_topics]

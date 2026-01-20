@@ -4,23 +4,12 @@ from typing import List, Dict, Any, Optional
 
 import pandas as pd
 import streamlit as st
-from packaging import version
-
-# ---- Safety check for rich/streamlit combo
-try:
-    import rich as _rich
-    if version.parse(_rich.__version__) >= version.parse("14.0.0"):
-        st.warning(
-            f"Detected rich {_rich.__version__}. Streamlit 1.37.0 requires rich<14. "
-            "Fix with: pip install 'rich<14'"
-        )
-except Exception:
-    pass
 
 from utils.parsing import parse_keywords, parse_csv_locations
 from utils.infer_beats import infer_topics_from_text, normalize_topics
-from services.newsapi import fetch_newsapi_top_headlines, fetch_newsapi_everything
-from services.perigon import fetch_perigon_stories
+from services.newsapi import fetch_newsapi_everything, NewsAPIError
+from services.perigon import fetch_perigon_articles_all, PerigonError
+
 
 st.set_page_config(
     page_title="Reporter Identification Tool",
@@ -29,12 +18,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# NewsAPI free/dev plans often restrict how far back you can query.
+NEWSAPI_FREE_MAX_DAYS = 29
+
+
 # ---------------- Session State
 defaults = {
     "keywords": "",
     "topics": [],
     "locations": "",
-    "recency_days": 90,
+    "recency_days": 30,
     "strict": False,
     "use_newsapi": True,
     "use_perigon": True,
@@ -55,10 +48,9 @@ with st.sidebar:
     st.session_state.keywords = st.text_input(
         "Keywords (primary)",
         value=st.session_state.keywords,
-        placeholder="e.g., AI regulation, startups funding, antitrust, labor",
+        placeholder="e.g., AI regulation, healthcare, antitrust, labor",
     )
 
-    # Optional topic chips; if streamlit-tags isn't installed, we fall back to a plain text input
     topics: List[str] = []
     used_fallback = False
     try:
@@ -88,7 +80,7 @@ with st.sidebar:
     st.session_state.topics = normalize_topics(topics)
 
     st.caption(
-        "Topics are used as metadata **when available** (Perigon `topics`), "
+        "Topics are used as metadata **when available** (Perigon taxonomies/topics), "
         "otherwise they’re treated as extra keyword hints (NewsAPI)."
     )
 
@@ -100,9 +92,9 @@ with st.sidebar:
 
     st.session_state.recency_days = st.slider(
         "Recency (days)",
-        7, 365,
+        1, 365,
         int(st.session_state.recency_days),
-        help="How recent should articles be? If results are empty, we can widen this automatically when Strict is off."
+        help="NewsAPI free plan usually only supports the last ~30 days on /everything.",
     )
 
     st.session_state.strict = st.toggle(
@@ -120,7 +112,14 @@ with st.sidebar:
         st.session_state.use_perigon = st.checkbox("Perigon", value=bool(st.session_state.use_perigon))
 
     if used_fallback:
-        st.caption("Tip: install optional dependency `streamlit-tags` for autocomplete chips.")
+        st.caption("Note: missing bootstrap.min.css.map warnings from streamlit-tags are harmless on Streamlit Cloud.")
+
+    # Friendly warning if NewsAPI selected with recency too high
+    if st.session_state.use_newsapi and int(st.session_state.recency_days) > NEWSAPI_FREE_MAX_DAYS:
+        st.warning(
+            f"NewsAPI /everything is often limited to the last ~{NEWSAPI_FREE_MAX_DAYS} days on free/dev plans. "
+            "We’ll cap the NewsAPI date range automatically."
+        )
 
     st.divider()
     if st.button("Search", type="primary", use_container_width=True):
@@ -136,6 +135,9 @@ def _utc_now() -> datetime:
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+def _safe_str(x) -> str:
+    return "" if x is None else str(x)
+
 def _load_articles() -> pd.DataFrame:
     keywords = st.session_state.keywords.strip()
     topic_hints = st.session_state.topics
@@ -145,6 +147,7 @@ def _load_articles() -> pd.DataFrame:
     if not keywords and not topic_hints:
         return pd.DataFrame()
 
+    # Build query string (NewsAPI expects a single q)
     query_terms = [t for t in parse_keywords(keywords) if t] + [t for t in topic_hints if t]
     query = " OR ".join([f'"{t}"' if " " in t else t for t in query_terms]) if query_terms else ""
 
@@ -152,120 +155,110 @@ def _load_articles() -> pd.DataFrame:
 
     rows: List[Dict[str, Any]] = []
 
+    # --- NewsAPI
     if st.session_state.use_newsapi:
-        newsapi_items: List[Dict[str, Any]] = []
-        try:
-            if keywords or topic_hints:
+        # Cap 'from' for NewsAPI free plan compatibility
+        news_from_dt = max(from_dt, _utc_now() - timedelta(days=NEWSAPI_FREE_MAX_DAYS))
+        news_from_iso = _iso(news_from_dt)
+
+        api_key = os.getenv("NEWSAPI_KEY") or os.getenv("NEWS_API_KEY")
+        if not api_key:
+            st.warning("Missing NewsAPI key. Set NEWS_API_KEY in Streamlit secrets.")
+        else:
+            try:
                 newsapi_items = fetch_newsapi_everything(
+                    api_key=api_key,
                     q=query,
-                    from_iso=_iso(from_dt),
+                    from_iso=news_from_iso,
                     language="en",
                     page_size=100,
                 )
-            else:
-                newsapi_items = fetch_newsapi_top_headlines(country="us", page_size=100)
-        except Exception as e:
-            # Don't crash the app if NewsAPI is misconfigured or rate-limited.
-            # Streamlit Cloud will redact the original exception message if we let it bubble.
-            # Keep this message user-facing and safe (no URLs / apiKey).
-            msg = str(e)
-            status = ""
-            if hasattr(e, "response") and getattr(e, "response") is not None:
-                try:
-                    status = f"HTTP {e.response.status_code}: "
-                    # NewsAPI often returns JSON like {"status":"error","code":"...","message":"..."}
-                    j = e.response.json()
-                    if isinstance(j, dict) and j.get("message"):
-                        msg = str(j.get("message"))
-                except Exception:
-                    pass
-            st.warning(f"NewsAPI request failed. {status}{msg}")
-            newsapi_items = []
+            except NewsAPIError as e:
+                st.warning(str(e))
+                newsapi_items = []
 
-        for a in newsapi_items:
-            rows.append({
-                "source_api": "NewsAPI",
-                "source": (a.get("source") or {}).get("name"),
-                "author": a.get("author"),
-                "title": a.get("title"),
-                "description": a.get("description"),
-                "content": a.get("content"),
-                "url": a.get("url"),
-                "publishedAt": a.get("publishedAt"),
-                "topics": None,
-                "sentiment": None,
-            })
+            for a in newsapi_items:
+                rows.append({
+                    "source_api": "NewsAPI",
+                    "source": (a.get("source") or {}).get("name"),
+                    "author": a.get("author"),
+                    "title": a.get("title"),
+                    "description": a.get("description"),
+                    "content": a.get("content"),
+                    "url": a.get("url"),
+                    "publishedAt": a.get("publishedAt"),
+                    "topics_raw": None,      # NewsAPI: no topics metadata in response
+                    "sentiment": None,
+                })
 
+    # --- Perigon
     if st.session_state.use_perigon:
-        perigon_items: List[Dict[str, Any]] = []
-        try:
-            perigon_items = fetch_perigon_stories(
-                q=keywords or None,
-                from_iso=_iso(from_dt),
-                page_size=100,
-            )
-        except Exception as e:
-            # Avoid leaking request URLs (which could contain apiKey) in error strings.
-            msg = str(e)
-            status = ""
-            if hasattr(e, "response") and getattr(e, "response") is not None:
-                try:
-                    status = f"HTTP {e.response.status_code}: "
-                    j = e.response.json()
-                    if isinstance(j, dict) and (j.get("message") or j.get("error")):
-                        msg = str(j.get("message") or j.get("error"))
-                except Exception:
-                    pass
-            st.warning(f"Perigon request failed. {status}{msg}")
-            perigon_items = []
+        api_key = os.getenv("PERIGON_API_KEY") or os.getenv("PERIGON_KEY")
+        if not api_key:
+            st.warning("Missing Perigon key. Set PERIGON_API_KEY in Streamlit secrets.")
+        else:
+            try:
+                perigon_items = fetch_perigon_articles_all(
+                    api_key=api_key,
+                    q=keywords or None,
+                    language="en",
+                    sort_by="date",
+                    from_iso=_iso(from_dt),
+                    page=0,
+                    size=100,
+                    show_num_results=True,
+                    show_reprints=False,
+                )
+            except PerigonError as e:
+                st.warning(str(e))
+                perigon_items = []
 
-        def _perigon_source_domain(a: dict) -> str:
-            src = a.get("source")
-            if isinstance(src, dict):
-                return (src.get("domain") or src.get("name") or "").strip()
-            return (str(src) if src else "").strip()
+            for a in perigon_items:
+                src = a.get("source") or {}
+                # Author normalization: prefer authorsByline, fallback to matchedAuthors names
+                author = a.get("authorsByline")
+                if not author:
+                    ma = a.get("matchedAuthors") or []
+                    if isinstance(ma, list) and ma:
+                        names = [m.get("name") for m in ma if isinstance(m, dict) and m.get("name")]
+                        author = ", ".join(names) if names else None
 
-        def _perigon_author(a: dict) -> str:
-            # Perigon commonly uses authorsByline; sometimes matchedAuthors.
-            byline = (a.get("authorsByline") or a.get("author") or "").strip()
-            if byline:
-                return byline
-            matched = a.get("matchedAuthors")
-            if isinstance(matched, list) and matched:
-                names = [str(m.get("name") or "").strip() for m in matched if isinstance(m, dict)]
-                names = [n for n in names if n]
-                return ", ".join(names)
-            return ""
+                # Topics: prefer topics/categories/taxonomies/keywords if present
+                topics = []
+                for key in ("topics", "categories"):
+                    lst = a.get(key) or []
+                    if isinstance(lst, list) and lst:
+                        topics.extend([x.get("name") for x in lst if isinstance(x, dict) and x.get("name")])
+                tax = a.get("taxonomies") or []
+                if isinstance(tax, list) and tax:
+                    # keep top few by score if present
+                    tax_sorted = sorted(
+                        [x for x in tax if isinstance(x, dict) and x.get("name")],
+                        key=lambda x: float(x.get("score", 0) or 0),
+                        reverse=True,
+                    )
+                    topics.extend([x.get("name") for x in tax_sorted[:6]])
+                kw = a.get("keywords") or []
+                if isinstance(kw, list) and kw:
+                    kw_sorted = sorted(
+                        [x for x in kw if isinstance(x, dict) and x.get("name")],
+                        key=lambda x: float(x.get("weight", 0) or 0),
+                        reverse=True,
+                    )
+                    topics.extend([x.get("name") for x in kw_sorted[:6]])
 
-        def _perigon_topics(a: dict) -> List[str]:
-            # Perigon can return topics/categories/taxonomies as lists of dicts with "name".
-            out: List[str] = []
-            for key in ("topics", "categories", "taxonomies"):
-                val = a.get(key)
-                if isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, dict):
-                            name = item.get("name")
-                            if name:
-                                out.append(str(name))
-                        elif item:
-                            out.append(str(item))
-            return out
-
-        for a in perigon_items:
-            rows.append({
-                "source_api": "Perigon",
-                "source": _perigon_source_domain(a),
-                "author": _perigon_author(a),
-                "title": a.get("title"),
-                "description": a.get("description"),
-                "content": a.get("content"),
-                "url": a.get("url"),
-                # Perigon uses pubDate (e.g. 2026-01-20T16:22:13+00:00)
-                "publishedAt": a.get("pubDate") or a.get("publishedAt"),
-                "topics": _perigon_topics(a),
-                "sentiment": a.get("sentiment"),
-            })
+                rows.append({
+                    "source_api": "Perigon",
+                    "source": src.get("domain") or src.get("title") or a.get("sourceName"),
+                    "author": author,
+                    "title": a.get("title"),
+                    "description": a.get("description"),
+                    "content": a.get("content"),
+                    "url": a.get("url"),
+                    "publishedAt": a.get("pubDate") or a.get("publishedAt"),
+                    "topics_raw": topics or None,
+                    "sentiment": a.get("sentiment"),
+                })
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -273,17 +266,20 @@ def _load_articles() -> pd.DataFrame:
 
     df["publishedAt"] = pd.to_datetime(df["publishedAt"], errors="coerce", utc=True)
 
+    # Normalize topics: use metadata when present, else infer from text
     def _topics_for_row(r) -> List[str]:
-        if isinstance(r.get("topics"), list) and r["topics"]:
-            return normalize_topics([str(x) for x in r["topics"] if x])
-        text = " ".join([str(r.get("title") or ""), str(r.get("description") or ""), str(r.get("content") or "")])
+        raw = r.get("topics_raw")
+        if isinstance(raw, list) and raw:
+            return normalize_topics([_safe_str(x) for x in raw if x])
+        text = " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))])
         inferred = infer_topics_from_text(text, extra_hints=topic_hints)
         return normalize_topics(inferred)
 
     df["topics_norm"] = df.apply(_topics_for_row, axis=1)
 
+    # Location scoring/filtering (simple keyword contains)
     def _blob(r) -> str:
-        return " ".join([str(r.get("title") or ""), str(r.get("description") or ""), str(r.get("content") or "")]).lower()
+        return " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower()
 
     blob = df.apply(_blob, axis=1)
 
@@ -343,8 +339,7 @@ def _reporters_from_articles(df_articles: pd.DataFrame) -> pd.DataFrame:
         topics=("topics_norm", _top_topics),
     ).reset_index()
 
-    grouped = grouped.sort_values(["articles", "last_seen"], ascending=[False, False])
-    return grouped
+    return grouped.sort_values(["articles", "last_seen"], ascending=[False, False])
 
 def _ensure_results():
     if not st.session_state.search_clicked:
@@ -352,9 +347,9 @@ def _ensure_results():
 
     df = _load_articles()
 
+    # Wider recency only helps Perigon; NewsAPI is capped anyway
     if df.empty and not st.session_state.strict and int(st.session_state.recency_days) < 365:
-        widened = min(365, int(st.session_state.recency_days) + 180)
-        st.session_state.recency_days = widened
+        st.session_state.recency_days = min(365, int(st.session_state.recency_days) + 30)
         df = _load_articles()
 
     st.session_state.last_results_articles = df
@@ -373,9 +368,6 @@ with tab_reporter:
     else:
         st.caption("Authors are aggregated from returned articles. NewsAPI often has missing authors; Perigon usually provides them.")
         st.dataframe(df_reporters, use_container_width=True)
-        if not df_reporters.empty:
-            csv = df_reporters.to_csv(index=False).encode("utf-8")
-            st.download_button("Download CSV", csv, "reporters.csv", "text/csv")
 
 with tab_articles:
     st.subheader("Articles")
@@ -386,8 +378,5 @@ with tab_articles:
         view["topics"] = view["topics_norm"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
         view = view.drop(columns=["topics_norm"], errors="ignore")
         st.dataframe(view, use_container_width=True)
-        if not view.empty:
-            csv = view.to_csv(index=False).encode("utf-8")
-            st.download_button("Download CSV", csv, "articles.csv", "text/csv")
 
-st.caption("Theme + search UX updated: single sidebar keyword search, Perigon topics used when present, otherwise inferred.")
+st.caption("Fix: NewsAPI 426 errors are handled gracefully + date range is capped for free plan. Theme primary color: #045359.")

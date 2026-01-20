@@ -1,48 +1,53 @@
-import os
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
+from typing import Any, Dict, List, Optional
 import requests
 
-# Perigon API base. The endpoint you tested uses:
-#   https://api.perigon.io/v1/articles/all?...
-PERIGON_BASE = os.getenv("PERIGON_BASE_URL", "https://api.perigon.io")
 
-def _key() -> str:
-    k = os.getenv("PERIGON_KEY") or os.getenv("PERIGON_API_KEY")
-    if not k:
-        raise RuntimeError("Missing Perigon key. Set PERIGON_KEY (or PERIGON_API_KEY) in env or Streamlit secrets.")
-    return k
+class PerigonError(RuntimeError):
+    """Raised when Perigon request fails in a way we want to surface safely."""
 
-def fetch_perigon_stories(
+
+def fetch_perigon_articles_all(
+    api_key: str,
     q: Optional[str] = None,
+    language: str = "en",
+    sort_by: str = "date",
     from_iso: Optional[str] = None,
-    page_size: int = 100,
+    page: int = 0,
+    size: int = 25,
+    show_num_results: bool = True,
+    show_reprints: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Fetch articles from Perigon.
-
-    Notes:
-      - Perigon uses an `apiKey` query param (not Bearer auth).
-      - The primary endpoint is /v1/articles/all.
-    """
-
-    url = f"{PERIGON_BASE}/v1/articles/all"
-
-    params = {
-        "apiKey": _key(),
-        "language": "en",
-        "sortBy": "date",
-        "showNumResults": "true",
-        "page": 0,
-        "size": int(page_size),
-        "showReprints": "false",
+    url = "https://api.perigon.io/v1/articles/all"
+    params: Dict[str, Any] = {
+        "language": language,
+        "sortBy": sort_by,
+        "showNumResults": str(show_num_results).lower(),
+        "page": page,
+        "size": size,
+        "showReprints": str(show_reprints).lower(),
+        "apiKey": api_key,
     }
     if q:
         params["q"] = q
     if from_iso:
         params["from"] = from_iso
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    # Perigon responses commonly use `articles`.
-    return data.get("articles") or data.get("results") or []
+    try:
+        r = requests.get(url, params=params, timeout=30)
+        if r.status_code >= 400:
+            msg = ""
+            try:
+                data = r.json() or {}
+                msg = (data.get("message") or data.get("error") or "").strip()
+            except Exception:
+                msg = ""
+            raise PerigonError(f"Perigon request failed ({r.status_code}). {msg}".strip())
+
+        data = r.json() or {}
+        # Real endpoint uses "articles"
+        return data.get("articles") or data.get("results") or []
+
+    except requests.RequestException as e:
+        raise PerigonError("Perigon request failed due to a network/timeout error.") from e
