@@ -2,7 +2,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 import pandas as pd
 import streamlit as st
@@ -20,7 +20,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Load optional custom CSS (safe, editable)
 def load_css(path: str) -> None:
     css_path = Path(path)
     if css_path.exists():
@@ -28,10 +27,9 @@ def load_css(path: str) -> None:
 
 load_css("assets/custom.css")
 
-# NewsAPI free/dev plans often restrict how far back you can query.
 NEWSAPI_FREE_MAX_DAYS = 29
 
-# Author/source hygiene
+# ---------------- Author/source hygiene
 ORG_SUFFIXES = (
     " llp", " llc", " inc", " ltd", " plc", " gmbh", " corp", " corporation", " company",
     " partners", " partner", " group", " holdings", " capital", " management", " advisory",
@@ -43,7 +41,23 @@ NON_PERSON_KEYWORDS = (
 
 WIRE_SOURCE_HINTS = (
     "globenewswire", "prnewswire", "businesswire", "accesswire", "einpresswire",
-    "newsfile", "thedailystar", "benzinga", "marketscreener",
+    "newsfile", "benzinga", "marketscreener",
+)
+
+# Hard blocklist (Option B): iterate on this list over time.
+# Use exact matches (lowercased, stripped). Add more as you discover them.
+BLOCKED_AUTHORS = {
+    "scienmag",
+    "globe newswire",
+    "globenewswire",
+    "newsfinal journal",
+}
+
+BLOCKED_AUTHOR_CONTAINS = (
+    # contains-based blocks for common wire-ish bylines
+    "globenewswire",
+    "prnewswire",
+    "businesswire",
 )
 
 def _utc_now() -> datetime:
@@ -55,6 +69,18 @@ def _iso(dt: datetime) -> str:
 def _safe_str(x) -> str:
     return "" if x is None else str(x)
 
+def is_blocked_author(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    low = name.strip().lower()
+    if not low:
+        return False
+    if low in BLOCKED_AUTHORS:
+        return True
+    if any(s in low for s in BLOCKED_AUTHOR_CONTAINS):
+        return True
+    return False
+
 def is_likely_person(name: Optional[str]) -> bool:
     if not name:
         return False
@@ -63,35 +89,31 @@ def is_likely_person(name: Optional[str]) -> bool:
         return False
     low = n.lower()
 
-    # obvious org / wire keywords
+    if is_blocked_author(n):
+        return False
+
     if any(k in low for k in NON_PERSON_KEYWORDS):
         return False
     if any(low.endswith(s) or f" {s.strip()}" in low for s in ORG_SUFFIXES):
         return False
 
-    # "Reuters", "Associated Press", etc. are not people
     if low in {"reuters", "associated press", "ap", "bbc news", "cnn", "axios"}:
         return False
 
-    # email-like or URL-like
     if "@" in low or "http" in low or ".com" in low:
         return False
 
-    # Too many non-letter chars
     letters = sum(ch.isalpha() for ch in n)
     if letters < max(4, int(len(n) * 0.5)):
         return False
 
-    # Person names often 2-4 words with caps; allow initials.
     tokens = re.split(r"\s+", n)
     if len(tokens) == 1:
-        # Single-token names can be real, but often aren't. Keep if looks like Name not Brand.
         return tokens[0][0].isupper() and tokens[0].isalpha() and len(tokens[0]) >= 3
 
     if len(tokens) > 5:
         return False
 
-    # Reject if every token is ALLCAPS (often org)
     if all(t.isupper() for t in tokens if t):
         return False
 
@@ -103,7 +125,6 @@ def classify_wire_pr(source: str, author: str, title: str) -> bool:
         return True
     if "press release" in blob or "prnewswire" in blob:
         return True
-    # Many PR firm authors show as "X LLP" etc.
     if any(sfx in author.lower() for sfx in (" llp", " llc", " inc", " ltd")):
         return True
     return False
@@ -116,7 +137,6 @@ def extract_matched_terms(text: str, terms: List[str]) -> List[str]:
             continue
         if term.lower() in t:
             hit.append(term.lower())
-    # de-dupe preserving order
     seen = set()
     out = []
     for h in hit:
@@ -129,13 +149,10 @@ def highlight_terms(text: str, terms: List[str], max_len: int = 140) -> str:
     if not text:
         return ""
     s = str(text)
-    # lightweight highlighting: wrap terms in « »
     out = s
-    # longest first to avoid nested replacements
     for term in sorted({t for t in terms if t}, key=len, reverse=True):
         pattern = re.compile(re.escape(term), re.IGNORECASE)
         out = pattern.sub(lambda m: f"«{m.group(0)}»", out)
-    # trim
     if len(out) > max_len:
         out = out[: max_len - 1] + "…"
     return out
@@ -147,7 +164,8 @@ defaults = {
     "locations": "",
     "recency_days": 30,
     "strict": False,
-    "use_newsapi": True,
+    # Temporarily disable NewsAPI by default for cleaner debugging
+    "use_newsapi": False,
     "use_perigon": True,
     "hide_non_person": True,
     "separate_wires": True,
@@ -185,7 +203,7 @@ with st.sidebar:
             label="Topics / beats (optional)",
             text="Add a topic and press Enter",
             value=st.session_state.topics,
-            suggestions=suggested,
+            suggestions=suggests := suggested,
             maxtags=12,
             key="topics_tags",
         )
@@ -238,7 +256,7 @@ with st.sidebar:
     )
 
     st.divider()
-    st.caption("Sources")
+    st.caption("Sources (NewsAPI disabled by default)")
     col_a, col_b = st.columns(2)
     with col_a:
         st.session_state.use_newsapi = st.checkbox("NewsAPI", value=bool(st.session_state.use_newsapi))
@@ -272,29 +290,24 @@ st.title("Reporter Identification Tool")
 tab_reporter, tab_articles, tab_wires = st.tabs(["Reporters", "Articles", "Wires / PR"])
 
 def _build_query_terms() -> List[str]:
-    # only parse "primary" keywords for relevance evidence
     kws = parse_keywords(st.session_state.keywords.strip())
-    # also include topics as *hints* but keep evidence terms as primary keywords only
     return [k for k in kws if k]
 
 def _load_articles() -> pd.DataFrame:
     keywords = st.session_state.keywords.strip()
     topic_hints = st.session_state.topics
     recency_days = int(st.session_state.recency_days)
-    locations = parse_csv_locations(st.session_state.locations)
 
     if not keywords and not topic_hints:
         return pd.DataFrame()
 
-    # Query for APIs (broader): include topics as OR
     query_terms = [t for t in parse_keywords(keywords) if t] + [t for t in topic_hints if t]
     query = " OR ".join([f'"{t}"' if " " in t else t for t in query_terms]) if query_terms else ""
 
     from_dt = _utc_now() - timedelta(days=recency_days)
-
     rows: List[Dict[str, Any]] = []
 
-    # --- NewsAPI
+    # --- NewsAPI (optional)
     if st.session_state.use_newsapi:
         news_from_dt = max(from_dt, _utc_now() - timedelta(days=NEWSAPI_FREE_MAX_DAYS))
         news_from_iso = _iso(news_from_dt)
@@ -353,7 +366,8 @@ def _load_articles() -> pd.DataFrame:
 
             for a in perigon_items:
                 src = a.get("source") or {}
-                # Author normalization: prefer matchedAuthors (names), fallback to authorsByline
+
+                # Author normalization: prefer matchedAuthors (names) over authorsByline
                 author = None
                 ma = a.get("matchedAuthors") or []
                 if isinstance(ma, list) and ma:
@@ -362,7 +376,6 @@ def _load_articles() -> pd.DataFrame:
                 if not author:
                     author = a.get("authorsByline") or a.get("author")
 
-                # Topics: prefer topics/categories/taxonomies/keywords if present
                 topics = []
                 for key in ("topics", "categories"):
                     lst = a.get(key) or []
@@ -404,7 +417,6 @@ def _load_articles() -> pd.DataFrame:
 
     df["publishedAt"] = pd.to_datetime(df["publishedAt"], errors="coerce", utc=True)
 
-    # Normalize topics: metadata when present; else infer from text
     def _topics_for_row(r) -> List[str]:
         raw = r.get("topics_raw")
         if isinstance(raw, list) and raw:
@@ -415,60 +427,36 @@ def _load_articles() -> pd.DataFrame:
 
     df["topics_norm"] = df.apply(_topics_for_row, axis=1)
 
-    # Relevance evidence (based on primary keywords only)
+    # Relevance evidence (primary keyword terms only)
     primary_terms = st.session_state.last_query_terms or []
     if primary_terms:
-        def _blob(r) -> str:
-            return " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower()
-        df["_blob"] = df.apply(_blob, axis=1)
+        df["_blob"] = df.apply(lambda r: " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower(), axis=1)
         df["matched_terms"] = df["_blob"].apply(lambda t: extract_matched_terms(t, primary_terms))
         df["match_count"] = df["matched_terms"].apply(lambda lst: len(lst) if isinstance(lst, list) else 0)
     else:
         df["matched_terms"] = [[] for _ in range(len(df))]
         df["match_count"] = 0
 
-    # Location scoring/filtering
-    locations = parse_csv_locations(st.session_state.locations)
-    user_locs = set([l.lower() for l in locations])
-
-    if user_locs:
-        df["_blob2"] = df.apply(lambda r: " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower(), axis=1)
-        df["loc_score"] = df["_blob2"].apply(lambda t: sum(1 for loc in user_locs if loc in t))
-    else:
-        df["loc_score"] = 0
-
-    # Topic scoring (boost)
-    user_topics = set([t.lower() for t in topic_hints])
-    if user_topics:
-        df["topic_score"] = df["topics_norm"].apply(lambda lst: sum(1 for t in (lst or []) if t.lower() in user_topics))
-    else:
-        df["topic_score"] = 0
-
-    if st.session_state.strict:
-        if user_topics:
-            df = df[df["topic_score"] > 0].copy()
-        if user_locs:
-            df = df[df["loc_score"] > 0].copy()
-
-    df = df.dropna(subset=["url"]).drop_duplicates(subset=["url"]).copy()
-
-    # Wire/PR flag + person flag
+    # Basic hygiene
     df["author"] = df["author"].fillna("").astype(str).str.strip()
     df["source"] = df["source"].fillna("").astype(str).str.strip()
+
+    # Drop hard-blocked authors early
+    df = df[~df["author"].apply(is_blocked_author)].copy()
+
     df["is_person"] = df["author"].apply(is_likely_person)
     df["is_wire_pr"] = df.apply(lambda r: classify_wire_pr(_safe_str(r.get("source")), _safe_str(r.get("author")), _safe_str(r.get("title"))), axis=1)
 
-    # Sorting
-    if st.session_state.strict:
-        df = df.sort_values(["publishedAt"], ascending=[False])
-    else:
-        df = df.sort_values(["match_count", "topic_score", "loc_score", "publishedAt"], ascending=[False, False, False, False])
+    df = df.dropna(subset=["url"]).drop_duplicates(subset=["url"]).copy()
+
+    # Sort with relevance first
+    df = df.sort_values(["match_count", "publishedAt"], ascending=[False, False])
 
     return df
 
 def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.DataFrame:
     if df_articles.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence"])
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "apis"])
 
     d = df_articles.copy()
     d["author"] = d["author"].fillna("").astype(str).str.strip()
@@ -480,7 +468,7 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
         d = d[d["is_person"] == False].copy()
 
     if d.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence"])
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence", "apis"])
 
     primary_terms = st.session_state.last_query_terms or []
 
@@ -492,12 +480,11 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
         return [k for k, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
     def _evidence_titles(group: pd.DataFrame, n: int = 2) -> str:
-        # pick titles from rows with match_count>0 first, else most recent
         g = group.copy()
         g["publishedAt"] = pd.to_datetime(g["publishedAt"], errors="coerce", utc=True)
         g = g.sort_values(["match_count", "publishedAt"], ascending=[False, False])
         titles = []
-        for _, row in g.head(6).iterrows():
+        for _, row in g.head(8).iterrows():
             title = _safe_str(row.get("title"))
             terms = row.get("matched_terms") or primary_terms
             terms = [t for t in terms if t]
@@ -506,12 +493,17 @@ def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.Data
                 break
         return " | ".join([t for t in titles if t])
 
+    def _apis_list(group: pd.DataFrame) -> str:
+        vals = sorted({str(x) for x in group["source_api"].dropna().tolist() if str(x)})
+        return ", ".join(vals)
+
     grouped = d.groupby(["author", "source"], dropna=False).apply(
         lambda g: pd.Series({
             "articles": int(g["url"].count()),
             "last_seen": pd.to_datetime(g["publishedAt"], errors="coerce", utc=True).max(),
             "matched_terms": ", ".join(_top_terms(g["matched_terms"])),
             "evidence": _evidence_titles(g),
+            "apis": _apis_list(g),
         })
     ).reset_index()
 
@@ -524,12 +516,6 @@ def _ensure_results():
     st.session_state.last_query_terms = _build_query_terms()
     df = _load_articles()
 
-    # Widen recency only helps Perigon; NewsAPI is capped anyway
-    if df.empty and not st.session_state.strict and int(st.session_state.recency_days) < 365:
-        st.session_state.recency_days = min(365, int(st.session_state.recency_days) + 30)
-        df = _load_articles()
-
-    # Split wires/pr if requested
     df_wires = df[df["is_wire_pr"] == True].copy() if not df.empty else pd.DataFrame()
     df_main = df[df["is_wire_pr"] == False].copy() if (st.session_state.separate_wires and not df.empty) else df
 
@@ -549,10 +535,7 @@ df_wires: Optional[pd.DataFrame] = st.session_state.last_results_wires
 
 with tab_reporter:
     st.subheader("Reporters")
-    st.caption(
-        "This table hides most PR/wire/org bylines by default. "
-        "Use the sidebar toggles to show more."
-    )
+    st.caption("Now includes an `apis` column so you can see whether a row came from Perigon or NewsAPI.")
     if df_reporters is None:
         st.info("Enter keywords in the sidebar and click Search.")
     else:
@@ -560,10 +543,7 @@ with tab_reporter:
 
 with tab_wires:
     st.subheader("Wires / PR / Organizations")
-    st.caption(
-        "These are non-person bylines and wire/press-release sources (e.g., GlobeNewswire). "
-        "They’re separated so they don’t drown out real reporters."
-    )
+    st.caption("Separated from reporters to avoid drowning out real names.")
     if df_wires is None:
         st.info("Run a search to populate this tab.")
     else:
@@ -571,7 +551,7 @@ with tab_wires:
 
 with tab_articles:
     st.subheader("Articles")
-    st.caption("Tip: `matched_terms` shows which of your primary keywords were found in the fetched article text.")
+    st.caption("Includes `source_api` so you can see which API returned each article.")
     if df_articles is None:
         st.info("Enter keywords in the sidebar and click Search.")
     else:
@@ -584,7 +564,4 @@ with tab_articles:
                 view[c] = ""
         st.dataframe(view[cols], use_container_width=True)
 
-st.caption(
-    "Note: author/byline data from public feeds can be messy. "
-    "This version adds quality filters + simple relevance evidence."
-)
+st.caption("Hard blocklist enabled (Option B). Add more author strings in BLOCKED_AUTHORS as you encounter them.")
