@@ -1,0 +1,76 @@
+:root {
+  --brand: #045359;
+}
+
+/* ======================
+   BUTTONS
+   ====================== */
+.stButton > button {
+  background: var(--brand) !important;
+  border-color: var(--brand) !important;
+}
+.stButton > button:hover {
+  filter: brightness(0.95);
+}
+
+/* ======================
+   LINKS
+   ====================== */
+a, a:visited {
+  color: var(--brand) !important;
+}
+
+/* ======================
+   TABS
+   ====================== */
+div[data-baseweb="tab-list"] button[aria-selected="true"] {
+  color: var(--brand) !important;
+}
+div[data-baseweb="tab-highlight"] {
+  background-color: var(--brand) !important;
+}
+
+/* ======================
+   SLIDERS
+   ====================== */
+div[data-testid="stSlider"] div[role="progressbar"] {
+  background-color: var(--brand) !important;
+}
+
+div[data-testid="stSlider"] div {
+  background-image: none !important;
+}
+
+div[data-testid="stSlider"] *[style*="rgb(240, 96, 0)"] {
+  background: var(--brand) !important;
+  background-image: none !important;
+}
+
+/* ======================
+   CHECKBOXES / RADIOS
+   ====================== */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--brand) !important;
+}
+
+div[data-testid="stCheckbox"] * {
+  border-color: var(--brand) !important;
+  outline-color: var(--brand) !important;
+}
+
+div[data-testid="stCheckbox"] *[style*="rgb(240, 96, 0)"],
+div[data-testid="stCheckbox"] *[style*="#F06000"],
+div[data-testid="stCheckbox"] *[style*="#f06000"] {
+  border-color: var(--brand) !important;
+  outline-color: var(--brand) !important;
+}
+
+/* ======================
+   GLOBAL FALLBACK
+   ====================== */
+*[style*="rgb(240, 96, 0)"] {
+  color: var(--brand) !important;
+  border-color: var(--brand) !important;
+  outline-color: var(--brand) !important;
+}

@@ -1,6 +1,8 @@
 import os
+import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -18,124 +20,125 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- Theme hardening
-# If Streamlit Cloud isn't picking up .streamlit/config.toml (e.g., file not committed or theme overridden),
-# force the primary color via CSS so buttons/highlights are consistently #045359.
-THEME_PRIMARY = "#045359"
+# Load optional custom CSS (safe, editable)
+def load_css(path: str) -> None:
+    css_path = Path(path)
+    if css_path.exists():
+        st.markdown(f"<style>{css_path.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
-# Streamlit Cloud can override config.toml via app Settings > Theme. Even when that happens,
-# we still try to force the brand color through CSS so the UI stays consistent.
-st.markdown(
-    f"""
-    <style>
-      /* Try to override Streamlit's CSS variables (Cloud theme settings may set these). */
-      :root, html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {{
-        --primary-color: {THEME_PRIMARY} !important;
-        --accent-color: {THEME_PRIMARY} !important;
-        --primaryColor: {THEME_PRIMARY} !important;
-      }}
-
-      /* Buttons */
-      .stButton>button {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      .stButton>button:hover {{ filter: brightness(0.95); }}
-
-      /* Links */
-      a, a:visited {{ color: {THEME_PRIMARY} !important; }}
-
-      /* Generic form control accent (helps on newer browsers/Streamlit builds) */
-      * {{ accent-color: {THEME_PRIMARY}; }}
-
-      /* Tabs (label + underline/highlight) */
-      div[data-baseweb="tab"] button[aria-selected="true"] {{
-        color: {THEME_PRIMARY} !important;
-      }}
-      /* Broader tab selectors (Streamlit/Baseweb variants) */
-      button[role="tab"][aria-selected="true"] {{
-        color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="tab-highlight"] {{
-        background-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="tab-border"] {{
-        background-color: rgba(4, 83, 89, 0.25) !important;
-      }}
-
-      /* Slider */
-      div[data-baseweb="slider"] div[role="slider"] {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="slider"] div[role="slider"]:focus {{
-        box-shadow: 0 0 0 0.2rem rgba(4, 83, 89, 0.25) !important;
-      }}
-      div[data-baseweb="slider"] div[aria-valuenow] {{
-        background-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="slider"] div[data-testid="stTickBar"] > div {{
-        background-color: {THEME_PRIMARY} !important;
-      }}
-
-      /* Checkbox / toggle */
-      div[data-baseweb="checkbox"] input:checked + div {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="checkbox"] div[role="checkbox"][aria-checked="true"] {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="switch"] div[role="switch"][aria-checked="true"] {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="switch"] div[role="switch"][aria-checked="true"] {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-      }}
-      div[data-baseweb="checkbox"] svg {{
-        fill: white !important;
-      }}
-
-      /* Focus rings */
-      :focus-visible {{
-        outline-color: {THEME_PRIMARY} !important;
-      }}
-
-      /*
-        Streamlit Cloud "App settings → Theme" can inject the old orange theme
-        (#F06000) via inline styles on BaseWeb components (tabs, slider, etc.).
-        Inline styles beat most CSS, so we defensively override any inline
-        occurrences of the old orange to ensure the UI stays on-brand.
-      */
-      [data-testid="stAppViewContainer"] *[style*="240, 96, 0"],
-      [data-testid="stAppViewContainer"] *[style*="240,96,0"],
-      [data-testid="stAppViewContainer"] *[style*="#F06000"],
-      [data-testid="stAppViewContainer"] *[style*="#f06000"] {{
-        background-color: {THEME_PRIMARY} !important;
-        border-color: {THEME_PRIMARY} !important;
-        outline-color: {THEME_PRIMARY} !important;
-        color: {THEME_PRIMARY} !important;
-      }}
-
-      /* Some elements use the orange as an accent (e.g., underline/border). */
-      [data-testid="stAppViewContainer"] *[style*="240, 96, 0"]:not(svg),
-      [data-testid="stAppViewContainer"] *[style*="240,96,0"]:not(svg) {{
-        border-bottom-color: {THEME_PRIMARY} !important;
-        border-left-color: {THEME_PRIMARY} !important;
-        border-right-color: {THEME_PRIMARY} !important;
-        border-top-color: {THEME_PRIMARY} !important;
-      }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+load_css("assets/custom.css")
 
 # NewsAPI free/dev plans often restrict how far back you can query.
 NEWSAPI_FREE_MAX_DAYS = 29
 
+# Author/source hygiene
+ORG_SUFFIXES = (
+    " llp", " llc", " inc", " ltd", " plc", " gmbh", " corp", " corporation", " company",
+    " partners", " partner", " group", " holdings", " capital", " management", " advisory",
+)
+NON_PERSON_KEYWORDS = (
+    "newswire", "prnewswire", "press release", "pressrelease", "wire", "staff", "editorial",
+    "desk", "team", "report", "reports", "announcement", "contributors", "contributor",
+)
+
+WIRE_SOURCE_HINTS = (
+    "globenewswire", "prnewswire", "businesswire", "accesswire", "einpresswire",
+    "newsfile", "thedailystar", "benzinga", "marketscreener",
+)
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _safe_str(x) -> str:
+    return "" if x is None else str(x)
+
+def is_likely_person(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    n = name.strip()
+    if not n:
+        return False
+    low = n.lower()
+
+    # obvious org / wire keywords
+    if any(k in low for k in NON_PERSON_KEYWORDS):
+        return False
+    if any(low.endswith(s) or f" {s.strip()}" in low for s in ORG_SUFFIXES):
+        return False
+
+    # "Reuters", "Associated Press", etc. are not people
+    if low in {"reuters", "associated press", "ap", "bbc news", "cnn", "axios"}:
+        return False
+
+    # email-like or URL-like
+    if "@" in low or "http" in low or ".com" in low:
+        return False
+
+    # Too many non-letter chars
+    letters = sum(ch.isalpha() for ch in n)
+    if letters < max(4, int(len(n) * 0.5)):
+        return False
+
+    # Person names often 2-4 words with caps; allow initials.
+    tokens = re.split(r"\s+", n)
+    if len(tokens) == 1:
+        # Single-token names can be real, but often aren't. Keep if looks like Name not Brand.
+        return tokens[0][0].isupper() and tokens[0].isalpha() and len(tokens[0]) >= 3
+
+    if len(tokens) > 5:
+        return False
+
+    # Reject if every token is ALLCAPS (often org)
+    if all(t.isupper() for t in tokens if t):
+        return False
+
+    return True
+
+def classify_wire_pr(source: str, author: str, title: str) -> bool:
+    blob = " ".join([source, author, title]).lower()
+    if any(h in blob for h in WIRE_SOURCE_HINTS):
+        return True
+    if "press release" in blob or "prnewswire" in blob:
+        return True
+    # Many PR firm authors show as "X LLP" etc.
+    if any(sfx in author.lower() for sfx in (" llp", " llc", " inc", " ltd")):
+        return True
+    return False
+
+def extract_matched_terms(text: str, terms: List[str]) -> List[str]:
+    t = text.lower()
+    hit = []
+    for term in terms:
+        if not term:
+            continue
+        if term.lower() in t:
+            hit.append(term.lower())
+    # de-dupe preserving order
+    seen = set()
+    out = []
+    for h in hit:
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out
+
+def highlight_terms(text: str, terms: List[str], max_len: int = 140) -> str:
+    if not text:
+        return ""
+    s = str(text)
+    # lightweight highlighting: wrap terms in « »
+    out = s
+    # longest first to avoid nested replacements
+    for term in sorted({t for t in terms if t}, key=len, reverse=True):
+        pattern = re.compile(re.escape(term), re.IGNORECASE)
+        out = pattern.sub(lambda m: f"«{m.group(0)}»", out)
+    # trim
+    if len(out) > max_len:
+        out = out[: max_len - 1] + "…"
+    return out
 
 # ---------------- Session State
 defaults = {
@@ -146,32 +149,28 @@ defaults = {
     "strict": False,
     "use_newsapi": True,
     "use_perigon": True,
+    "hide_non_person": True,
+    "separate_wires": True,
     "search_clicked": False,
     "last_results_articles": None,
     "last_results_reporters": None,
+    "last_results_wires": None,
+    "last_query_terms": [],
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-# ---------------- Sidebar: single source of truth
+# ---------------- Sidebar
 with st.sidebar:
     st.markdown("### Reporter Finder")
     st.caption("Enter keywords here; tabs change how results are displayed.")
     st.divider()
 
-    st.expander("Theme debug", expanded=False).write(
-        {
-            "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
-            "theme.base": st.get_option("theme.base"),
-            "config file expected at": ".streamlit/config.toml",
-        }
-    )
-
     st.session_state.keywords = st.text_input(
         "Keywords (primary)",
         value=st.session_state.keywords,
-        placeholder="e.g., AI regulation, healthcare, antitrust, labor",
+        placeholder="e.g., healthcare policy, hospital merger, insurance",
     )
 
     topics: List[str] = []
@@ -179,9 +178,8 @@ with st.sidebar:
     try:
         from streamlit_tags import st_tags  # type: ignore
         suggested = [
-            "ai", "machine learning", "startups", "labor", "antitrust", "privacy",
-            "cybersecurity", "elections", "climate", "health", "finance", "politics",
-            "technology", "media"
+            "healthcare", "insurance", "hospitals", "biotech", "pharma",
+            "ai", "privacy", "cybersecurity", "finance", "politics", "technology",
         ]
         topics = st_tags(
             label="Topics / beats (optional)",
@@ -196,7 +194,7 @@ with st.sidebar:
         topics_text = st.text_input(
             "Topics / beats (optional)",
             value=",".join(st.session_state.topics) if st.session_state.topics else "",
-            placeholder="e.g., ai, technology, finance"
+            placeholder="e.g., healthcare, insurance, biotech"
         )
         topics = parse_keywords(topics_text)
 
@@ -227,6 +225,19 @@ with st.sidebar:
     )
 
     st.divider()
+    st.caption("Quality filters")
+    st.session_state.hide_non_person = st.checkbox(
+        "Hide non-person authors (recommended)",
+        value=bool(st.session_state.hide_non_person),
+        help="Hides items like 'GlobeNewswire', PR firms, desks, and organizations.",
+    )
+    st.session_state.separate_wires = st.checkbox(
+        "Separate wire / PR sources into their own tab",
+        value=bool(st.session_state.separate_wires),
+        help="Keeps press releases and wire content out of the Reporters tab (still accessible).",
+    )
+
+    st.divider()
     st.caption("Sources")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -237,7 +248,6 @@ with st.sidebar:
     if used_fallback:
         st.caption("Note: missing bootstrap.min.css.map warnings from streamlit-tags are harmless on Streamlit Cloud.")
 
-    # Friendly warning if NewsAPI selected with recency too high
     if st.session_state.use_newsapi and int(st.session_state.recency_days) > NEWSAPI_FREE_MAX_DAYS:
         st.warning(
             f"NewsAPI /everything is often limited to the last ~{NEWSAPI_FREE_MAX_DAYS} days on free/dev plans. "
@@ -248,18 +258,24 @@ with st.sidebar:
     if st.button("Search", type="primary", use_container_width=True):
         st.session_state.search_clicked = True
 
+    st.expander("Theme debug", expanded=False).write(
+        {
+            "theme.primaryColor (active)": st.get_option("theme.primaryColor"),
+            "theme.base": st.get_option("theme.base"),
+            "config file expected at": ".streamlit/config.toml",
+        }
+    )
+
 # ---------------- Main
 st.title("Reporter Identification Tool")
-tab_reporter, tab_articles = st.tabs(["Reporter", "Articles"])
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+tab_reporter, tab_articles, tab_wires = st.tabs(["Reporters", "Articles", "Wires / PR"])
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-def _safe_str(x) -> str:
-    return "" if x is None else str(x)
+def _build_query_terms() -> List[str]:
+    # only parse "primary" keywords for relevance evidence
+    kws = parse_keywords(st.session_state.keywords.strip())
+    # also include topics as *hints* but keep evidence terms as primary keywords only
+    return [k for k in kws if k]
 
 def _load_articles() -> pd.DataFrame:
     keywords = st.session_state.keywords.strip()
@@ -270,7 +286,7 @@ def _load_articles() -> pd.DataFrame:
     if not keywords and not topic_hints:
         return pd.DataFrame()
 
-    # Build query string (NewsAPI expects a single q)
+    # Query for APIs (broader): include topics as OR
     query_terms = [t for t in parse_keywords(keywords) if t] + [t for t in topic_hints if t]
     query = " OR ".join([f'"{t}"' if " " in t else t for t in query_terms]) if query_terms else ""
 
@@ -280,7 +296,6 @@ def _load_articles() -> pd.DataFrame:
 
     # --- NewsAPI
     if st.session_state.use_newsapi:
-        # Cap 'from' for NewsAPI free plan compatibility
         news_from_dt = max(from_dt, _utc_now() - timedelta(days=NEWSAPI_FREE_MAX_DAYS))
         news_from_iso = _iso(news_from_dt)
 
@@ -310,7 +325,7 @@ def _load_articles() -> pd.DataFrame:
                     "content": a.get("content"),
                     "url": a.get("url"),
                     "publishedAt": a.get("publishedAt"),
-                    "topics_raw": None,      # NewsAPI: no topics metadata in response
+                    "topics_raw": None,
                     "sentiment": None,
                 })
 
@@ -338,13 +353,14 @@ def _load_articles() -> pd.DataFrame:
 
             for a in perigon_items:
                 src = a.get("source") or {}
-                # Author normalization: prefer authorsByline, fallback to matchedAuthors names
-                author = a.get("authorsByline")
+                # Author normalization: prefer matchedAuthors (names), fallback to authorsByline
+                author = None
+                ma = a.get("matchedAuthors") or []
+                if isinstance(ma, list) and ma:
+                    names = [m.get("name") for m in ma if isinstance(m, dict) and m.get("name")]
+                    author = ", ".join(names) if names else None
                 if not author:
-                    ma = a.get("matchedAuthors") or []
-                    if isinstance(ma, list) and ma:
-                        names = [m.get("name") for m in ma if isinstance(m, dict) and m.get("name")]
-                        author = ", ".join(names) if names else None
+                    author = a.get("authorsByline") or a.get("author")
 
                 # Topics: prefer topics/categories/taxonomies/keywords if present
                 topics = []
@@ -354,7 +370,6 @@ def _load_articles() -> pd.DataFrame:
                         topics.extend([x.get("name") for x in lst if isinstance(x, dict) and x.get("name")])
                 tax = a.get("taxonomies") or []
                 if isinstance(tax, list) and tax:
-                    # keep top few by score if present
                     tax_sorted = sorted(
                         [x for x in tax if isinstance(x, dict) and x.get("name")],
                         key=lambda x: float(x.get("score", 0) or 0),
@@ -389,7 +404,7 @@ def _load_articles() -> pd.DataFrame:
 
     df["publishedAt"] = pd.to_datetime(df["publishedAt"], errors="coerce", utc=True)
 
-    # Normalize topics: use metadata when present, else infer from text
+    # Normalize topics: metadata when present; else infer from text
     def _topics_for_row(r) -> List[str]:
         raw = r.get("topics_raw")
         if isinstance(raw, list) and raw:
@@ -400,28 +415,34 @@ def _load_articles() -> pd.DataFrame:
 
     df["topics_norm"] = df.apply(_topics_for_row, axis=1)
 
-    # Location scoring/filtering (simple keyword contains)
-    def _blob(r) -> str:
-        return " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower()
+    # Relevance evidence (based on primary keywords only)
+    primary_terms = st.session_state.last_query_terms or []
+    if primary_terms:
+        def _blob(r) -> str:
+            return " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower()
+        df["_blob"] = df.apply(_blob, axis=1)
+        df["matched_terms"] = df["_blob"].apply(lambda t: extract_matched_terms(t, primary_terms))
+        df["match_count"] = df["matched_terms"].apply(lambda lst: len(lst) if isinstance(lst, list) else 0)
+    else:
+        df["matched_terms"] = [[] for _ in range(len(df))]
+        df["match_count"] = 0
 
-    blob = df.apply(_blob, axis=1)
-
-    user_topics = set([t.lower() for t in topic_hints])
+    # Location scoring/filtering
+    locations = parse_csv_locations(st.session_state.locations)
     user_locs = set([l.lower() for l in locations])
 
-    def _topic_match_score(topics_list: List[str]) -> int:
-        if not user_topics:
-            return 0
-        return sum(1 for t in topics_list if t.lower() in user_topics)
+    if user_locs:
+        df["_blob2"] = df.apply(lambda r: " ".join([_safe_str(r.get("title")), _safe_str(r.get("description")), _safe_str(r.get("content"))]).lower(), axis=1)
+        df["loc_score"] = df["_blob2"].apply(lambda t: sum(1 for loc in user_locs if loc in t))
+    else:
+        df["loc_score"] = 0
 
-    df["topic_score"] = df["topics_norm"].apply(_topic_match_score)
-
-    def _loc_score(text_l: str) -> int:
-        if not user_locs:
-            return 0
-        return sum(1 for loc in user_locs if loc in text_l)
-
-    df["loc_score"] = blob.apply(_loc_score)
+    # Topic scoring (boost)
+    user_topics = set([t.lower() for t in topic_hints])
+    if user_topics:
+        df["topic_score"] = df["topics_norm"].apply(lambda lst: sum(1 for t in (lst or []) if t.lower() in user_topics))
+    else:
+        df["topic_score"] = 0
 
     if st.session_state.strict:
         if user_topics:
@@ -431,35 +452,67 @@ def _load_articles() -> pd.DataFrame:
 
     df = df.dropna(subset=["url"]).drop_duplicates(subset=["url"]).copy()
 
+    # Wire/PR flag + person flag
+    df["author"] = df["author"].fillna("").astype(str).str.strip()
+    df["source"] = df["source"].fillna("").astype(str).str.strip()
+    df["is_person"] = df["author"].apply(is_likely_person)
+    df["is_wire_pr"] = df.apply(lambda r: classify_wire_pr(_safe_str(r.get("source")), _safe_str(r.get("author")), _safe_str(r.get("title"))), axis=1)
+
+    # Sorting
     if st.session_state.strict:
         df = df.sort_values(["publishedAt"], ascending=[False])
     else:
-        df = df.sort_values(["topic_score", "loc_score", "publishedAt"], ascending=[False, False, False])
+        df = df.sort_values(["match_count", "topic_score", "loc_score", "publishedAt"], ascending=[False, False, False, False])
 
     return df
 
-def _reporters_from_articles(df_articles: pd.DataFrame) -> pd.DataFrame:
+def _aggregate_entities(df_articles: pd.DataFrame, keep_person: bool) -> pd.DataFrame:
     if df_articles.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "topics"])
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence"])
 
     d = df_articles.copy()
     d["author"] = d["author"].fillna("").astype(str).str.strip()
     d = d[d["author"] != ""].copy()
 
-    if d.empty:
-        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "topics"])
+    if keep_person:
+        d = d[d["is_person"] == True].copy()
+    else:
+        d = d[d["is_person"] == False].copy()
 
-    def _top_topics(series_of_lists: pd.Series, n: int = 5) -> List[str]:
-        counts = {}
-        for lst in series_of_lists.dropna():
+    if d.empty:
+        return pd.DataFrame(columns=["author", "source", "articles", "last_seen", "matched_terms", "evidence"])
+
+    primary_terms = st.session_state.last_query_terms or []
+
+    def _top_terms(series: pd.Series, n: int = 5) -> List[str]:
+        counts: Dict[str, int] = {}
+        for lst in series.dropna():
             for t in (lst or []):
                 counts[t] = counts.get(t, 0) + 1
         return [k for k, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:n]]
 
-    grouped = d.groupby(["author", "source"], dropna=False).agg(
-        articles=("url", "count"),
-        last_seen=("publishedAt", "max"),
-        topics=("topics_norm", _top_topics),
+    def _evidence_titles(group: pd.DataFrame, n: int = 2) -> str:
+        # pick titles from rows with match_count>0 first, else most recent
+        g = group.copy()
+        g["publishedAt"] = pd.to_datetime(g["publishedAt"], errors="coerce", utc=True)
+        g = g.sort_values(["match_count", "publishedAt"], ascending=[False, False])
+        titles = []
+        for _, row in g.head(6).iterrows():
+            title = _safe_str(row.get("title"))
+            terms = row.get("matched_terms") or primary_terms
+            terms = [t for t in terms if t]
+            titles.append(highlight_terms(title, terms, max_len=140))
+            if len(titles) >= n:
+                break
+        return " | ".join([t for t in titles if t])
+
+    grouped = d.groupby(["author", "source"], dropna=False).apply(
+        lambda g: pd.Series({
+            "articles": int(g["url"].count()),
+            "last_seen": pd.to_datetime(g["publishedAt"], errors="coerce", utc=True).max(),
+            "matched_terms": ", ".join(_top_terms(g["matched_terms"])),
+            "evidence": _evidence_titles(g),
+        })
     ).reset_index()
 
     return grouped.sort_values(["articles", "last_seen"], ascending=[False, False])
@@ -468,38 +521,70 @@ def _ensure_results():
     if not st.session_state.search_clicked:
         return
 
+    st.session_state.last_query_terms = _build_query_terms()
     df = _load_articles()
 
-    # Wider recency only helps Perigon; NewsAPI is capped anyway
+    # Widen recency only helps Perigon; NewsAPI is capped anyway
     if df.empty and not st.session_state.strict and int(st.session_state.recency_days) < 365:
         st.session_state.recency_days = min(365, int(st.session_state.recency_days) + 30)
         df = _load_articles()
 
+    # Split wires/pr if requested
+    df_wires = df[df["is_wire_pr"] == True].copy() if not df.empty else pd.DataFrame()
+    df_main = df[df["is_wire_pr"] == False].copy() if (st.session_state.separate_wires and not df.empty) else df
+
+    if st.session_state.hide_non_person and not df_main.empty:
+        df_main = df_main[df_main["is_person"] == True].copy()
+
     st.session_state.last_results_articles = df
-    st.session_state.last_results_reporters = _reporters_from_articles(df)
+    st.session_state.last_results_reporters = _aggregate_entities(df_main, keep_person=True)
+    st.session_state.last_results_wires = _aggregate_entities(df_wires, keep_person=False)
     st.session_state.search_clicked = False
 
 _ensure_results()
 
 df_articles: Optional[pd.DataFrame] = st.session_state.last_results_articles
 df_reporters: Optional[pd.DataFrame] = st.session_state.last_results_reporters
+df_wires: Optional[pd.DataFrame] = st.session_state.last_results_wires
 
 with tab_reporter:
     st.subheader("Reporters")
+    st.caption(
+        "This table hides most PR/wire/org bylines by default. "
+        "Use the sidebar toggles to show more."
+    )
     if df_reporters is None:
         st.info("Enter keywords in the sidebar and click Search.")
     else:
-        st.caption("Authors are aggregated from returned articles. NewsAPI often has missing authors; Perigon usually provides them.")
         st.dataframe(df_reporters, use_container_width=True)
+
+with tab_wires:
+    st.subheader("Wires / PR / Organizations")
+    st.caption(
+        "These are non-person bylines and wire/press-release sources (e.g., GlobeNewswire). "
+        "They’re separated so they don’t drown out real reporters."
+    )
+    if df_wires is None:
+        st.info("Run a search to populate this tab.")
+    else:
+        st.dataframe(df_wires, use_container_width=True)
 
 with tab_articles:
     st.subheader("Articles")
+    st.caption("Tip: `matched_terms` shows which of your primary keywords were found in the fetched article text.")
     if df_articles is None:
         st.info("Enter keywords in the sidebar and click Search.")
     else:
         view = df_articles.copy()
         view["topics"] = view["topics_norm"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
-        view = view.drop(columns=["topics_norm"], errors="ignore")
-        st.dataframe(view, use_container_width=True)
+        view["matched_terms"] = view["matched_terms"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+        cols = ["source_api", "source", "author", "title", "matched_terms", "publishedAt", "url", "topics"]
+        for c in cols:
+            if c not in view.columns:
+                view[c] = ""
+        st.dataframe(view[cols], use_container_width=True)
 
-st.caption("Fix: NewsAPI 426 errors are handled gracefully + date range is capped for free plan. Theme primary color: #045359.")
+st.caption(
+    "Note: author/byline data from public feeds can be messy. "
+    "This version adds quality filters + simple relevance evidence."
+)
