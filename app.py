@@ -153,15 +153,34 @@ def _load_articles() -> pd.DataFrame:
     rows: List[Dict[str, Any]] = []
 
     if st.session_state.use_newsapi:
-        if keywords or topic_hints:
-            newsapi_items = fetch_newsapi_everything(
-                q=query,
-                from_iso=_iso(from_dt),
-                language="en",
-                page_size=100,
-            )
-        else:
-            newsapi_items = fetch_newsapi_top_headlines(country="us", page_size=100)
+        newsapi_items: List[Dict[str, Any]] = []
+        try:
+            if keywords or topic_hints:
+                newsapi_items = fetch_newsapi_everything(
+                    q=query,
+                    from_iso=_iso(from_dt),
+                    language="en",
+                    page_size=100,
+                )
+            else:
+                newsapi_items = fetch_newsapi_top_headlines(country="us", page_size=100)
+        except Exception as e:
+            # Don't crash the app if NewsAPI is misconfigured or rate-limited.
+            # Streamlit Cloud will redact the original exception message if we let it bubble.
+            # Keep this message user-facing and safe (no URLs / apiKey).
+            msg = str(e)
+            status = ""
+            if hasattr(e, "response") and getattr(e, "response") is not None:
+                try:
+                    status = f"HTTP {e.response.status_code}: "
+                    # NewsAPI often returns JSON like {"status":"error","code":"...","message":"..."}
+                    j = e.response.json()
+                    if isinstance(j, dict) and j.get("message"):
+                        msg = str(j.get("message"))
+                except Exception:
+                    pass
+            st.warning(f"NewsAPI request failed. {status}{msg}")
+            newsapi_items = []
 
         for a in newsapi_items:
             rows.append({
@@ -178,11 +197,27 @@ def _load_articles() -> pd.DataFrame:
             })
 
     if st.session_state.use_perigon:
-        perigon_items = fetch_perigon_stories(
-            q=keywords or None,
-            from_iso=_iso(from_dt),
-            page_size=100,
-        )
+        perigon_items: List[Dict[str, Any]] = []
+        try:
+            perigon_items = fetch_perigon_stories(
+                q=keywords or None,
+                from_iso=_iso(from_dt),
+                page_size=100,
+            )
+        except Exception as e:
+            # Avoid leaking request URLs (which could contain apiKey) in error strings.
+            msg = str(e)
+            status = ""
+            if hasattr(e, "response") and getattr(e, "response") is not None:
+                try:
+                    status = f"HTTP {e.response.status_code}: "
+                    j = e.response.json()
+                    if isinstance(j, dict) and (j.get("message") or j.get("error")):
+                        msg = str(j.get("message") or j.get("error"))
+                except Exception:
+                    pass
+            st.warning(f"Perigon request failed. {status}{msg}")
+            perigon_items = []
 
         def _perigon_source_domain(a: dict) -> str:
             src = a.get("source")
